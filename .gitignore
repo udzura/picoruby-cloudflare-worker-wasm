@@ -53,3 +53,9 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# PicoRuby and Cloudflare Workers build artifacts
+/build/
+/dist/
+/node_modules/
+/.wrangler/
