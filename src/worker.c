@@ -1,6 +1,7 @@
 #include <emscripten.h>
 
 #include <mruby.h>
+#include <mruby/array.h>
 #include <mruby/class.h>
 #include <mruby/dump.h>
 #include <mruby/error.h>
@@ -16,13 +17,20 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define PICORB_WORKER_ABI_VERSION 1u
+#define PICORB_WORKER_REQUEST_MAGIC "PRQ1"
+#define PICORB_WORKER_RESPONSE_MAGIC "PRR1"
+#define PICORB_WORKER_MAX_REQUEST_FRAME_SIZE (2u * 1024u * 1024u)
+#define PICORB_WORKER_MAX_RESPONSE_FRAME_SIZE (8u * 1024u * 1024u)
+
 enum picorb_worker_status {
   PICORB_WORKER_OK = 0,
   PICORB_WORKER_INVALID_STATE = -1,
   PICORB_WORKER_LOAD_ERROR = -2,
-  PICORB_WORKER_DISPATCH_ERROR = -3,
-  PICORB_WORKER_RESULT_TYPE_ERROR = -4,
-  PICORB_WORKER_OUT_OF_MEMORY = -5
+  PICORB_WORKER_INVALID_REQUEST = -3,
+  PICORB_WORKER_DISPATCH_ERROR = -4,
+  PICORB_WORKER_INVALID_RESPONSE = -5,
+  PICORB_WORKER_OUT_OF_MEMORY = -6
 };
 
 typedef struct picorb_worker_buffer {
@@ -38,12 +46,13 @@ typedef struct picorb_worker_load_args {
 
 static mrb_state *worker_mrb = NULL;
 static mrb_value dispatch_proc;
-static picorb_worker_buffer result_buffer = { NULL, 0, 0 };
+static picorb_worker_buffer response_buffer = { NULL, 0, 0 };
 static picorb_worker_buffer error_buffer = { NULL, 0, 0 };
 
 static int
-buffer_assign(picorb_worker_buffer *buffer, const char *bytes, size_t len)
+buffer_reserve(picorb_worker_buffer *buffer, size_t len)
 {
+  if (len == SIZE_MAX) return PICORB_WORKER_OUT_OF_MEMORY;
   if (buffer->capacity <= len) {
     size_t capacity = len + 1;
     char *ptr = (char *)realloc(buffer->ptr, capacity);
@@ -51,6 +60,14 @@ buffer_assign(picorb_worker_buffer *buffer, const char *bytes, size_t len)
     buffer->ptr = ptr;
     buffer->capacity = capacity;
   }
+  return PICORB_WORKER_OK;
+}
+
+static int
+buffer_assign(picorb_worker_buffer *buffer, const char *bytes, size_t len)
+{
+  int status = buffer_reserve(buffer, len);
+  if (status != PICORB_WORKER_OK) return status;
 
   if (len > 0) memcpy(buffer->ptr, bytes, len);
   buffer->ptr[len] = '\0';
@@ -107,16 +124,17 @@ load_app_body(mrb_state *mrb, void *userdata)
     mrb_exc_raise(mrb, result);
   }
 
-  /* Resolve the application contract during initialization. */
-  struct RClass *handler = mrb_module_get(mrb, "PicoRubyWorker");
-  mrb_value handler_value = mrb_obj_value(handler);
-  if (!mrb_respond_to(mrb, handler_value, mrb_intern_lit(mrb, "fetch"))) {
-    mrb_raise(mrb, E_RUNTIME_ERROR, "PicoRubyWorker.fetch is not defined");
-  }
-  dispatch_proc = mrb_const_get(mrb, handler_value,
-                                mrb_intern_lit(mrb, "DISPATCH"));
+  struct RClass *worker = mrb_module_get(mrb, "PicoRubyWorker");
+  mrb_value worker_value = mrb_obj_value(worker);
+  dispatch_proc = mrb_const_get(mrb, worker_value, mrb_intern_lit(mrb, "DISPATCH"));
   if (!mrb_proc_p(dispatch_proc)) {
     mrb_raise(mrb, E_RUNTIME_ERROR, "PicoRubyWorker::DISPATCH is not a Proc");
+  }
+
+  struct RClass *adapter = mrb_module_get_under(mrb, worker, "RackAdapter");
+  mrb_value registered = mrb_funcall(mrb, mrb_obj_value(adapter), "registered?", 0);
+  if (!mrb_test(registered)) {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "Rack application is not registered");
   }
   return mrb_nil_value();
 }
@@ -128,11 +146,119 @@ execute_dispatch_body(mrb_state *mrb, void *userdata)
   return mrb_execute_proc_synchronously(mrb, dispatch_proc, 0, NULL);
 }
 
+static mrb_bool
+checked_add(size_t *total, size_t value)
+{
+  if (value > SIZE_MAX - *total) return FALSE;
+  *total += value;
+  return TRUE;
+}
+
+static void
+write_u32(uint8_t **cursor, uint32_t value)
+{
+  uint8_t *ptr = *cursor;
+  ptr[0] = (uint8_t)(value & 0xffu);
+  ptr[1] = (uint8_t)((value >> 8) & 0xffu);
+  ptr[2] = (uint8_t)((value >> 16) & 0xffu);
+  ptr[3] = (uint8_t)((value >> 24) & 0xffu);
+  *cursor = ptr + 4;
+}
+
+static mrb_bool
+add_encoded_string_size(size_t *total, mrb_value string)
+{
+  if (!mrb_string_p(string)) return FALSE;
+  size_t len = (size_t)RSTRING_LEN(string);
+  if (len > UINT32_MAX) return FALSE;
+  return checked_add(total, 4) && checked_add(total, len);
+}
+
+static void
+write_encoded_string(uint8_t **cursor, mrb_value string)
+{
+  uint32_t len = (uint32_t)RSTRING_LEN(string);
+  write_u32(cursor, len);
+  if (len > 0) {
+    memcpy(*cursor, RSTRING_PTR(string), len);
+    *cursor += len;
+  }
+}
+
+static int
+encode_response(mrb_state *mrb, mrb_value result)
+{
+  if (!mrb_array_p(result) || RARRAY_LEN(result) != 3) {
+    set_error_literal("Rack adapter must return a three-element Array");
+    return PICORB_WORKER_INVALID_RESPONSE;
+  }
+
+  mrb_value status_value = mrb_ary_ref(mrb, result, 0);
+  mrb_value headers = mrb_ary_ref(mrb, result, 1);
+  mrb_value body = mrb_ary_ref(mrb, result, 2);
+  if (!mrb_integer_p(status_value) || !mrb_array_p(headers) || !mrb_string_p(body)) {
+    set_error_literal("Rack adapter returned invalid response types");
+    return PICORB_WORKER_INVALID_RESPONSE;
+  }
+
+  mrb_int status_integer = mrb_integer(status_value);
+  mrb_int header_items = RARRAY_LEN(headers);
+  if (status_integer < 200 || status_integer > 599 || header_items < 0 || (header_items % 2) != 0) {
+    set_error_literal("Rack adapter returned an invalid status or header list");
+    return PICORB_WORKER_INVALID_RESPONSE;
+  }
+
+  size_t total = 12;
+  mrb_int index = 0;
+  while (index < header_items) {
+    mrb_value name = mrb_ary_ref(mrb, headers, index);
+    mrb_value value = mrb_ary_ref(mrb, headers, index + 1);
+    if (!add_encoded_string_size(&total, name) || !add_encoded_string_size(&total, value)) {
+      set_error_literal("Rack adapter returned invalid response headers");
+      return PICORB_WORKER_INVALID_RESPONSE;
+    }
+    index += 2;
+  }
+  if (!add_encoded_string_size(&total, body) || total > PICORB_WORKER_MAX_RESPONSE_FRAME_SIZE) {
+    set_error_literal("Rack response frame is too large");
+    return PICORB_WORKER_INVALID_RESPONSE;
+  }
+
+  int buffer_status = buffer_reserve(&response_buffer, total);
+  if (buffer_status != PICORB_WORKER_OK) {
+    set_error_literal("failed to allocate the response buffer");
+    return buffer_status;
+  }
+
+  uint8_t *cursor = (uint8_t *)response_buffer.ptr;
+  memcpy(cursor, PICORB_WORKER_RESPONSE_MAGIC, 4);
+  cursor += 4;
+  write_u32(&cursor, (uint32_t)status_integer);
+  write_u32(&cursor, (uint32_t)(header_items / 2));
+  index = 0;
+  while (index < header_items) {
+    write_encoded_string(&cursor, mrb_ary_ref(mrb, headers, index));
+    write_encoded_string(&cursor, mrb_ary_ref(mrb, headers, index + 1));
+    index += 2;
+  }
+  write_encoded_string(&cursor, body);
+  response_buffer.ptr[total] = '\0';
+  response_buffer.len = total;
+  return PICORB_WORKER_OK;
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t
+picorb_worker_abi_version(void)
+{
+  return PICORB_WORKER_ABI_VERSION;
+}
+
 EMSCRIPTEN_KEEPALIVE
 int
 picorb_worker_init(const uint8_t *mrb_data, size_t mrb_len)
 {
-  buffer_clear(&result_buffer);
+  buffer_clear(&response_buffer);
   buffer_clear(&error_buffer);
 
   if (worker_mrb || !mrb_data || mrb_len == 0) {
@@ -162,59 +288,52 @@ picorb_worker_init(const uint8_t *mrb_data, size_t mrb_len)
 
 EMSCRIPTEN_KEEPALIVE
 int
-picorb_worker_dispatch(const char *method, size_t method_len,
-                       const char *url, size_t url_len)
+picorb_worker_dispatch_v1(const uint8_t *request_frame, size_t request_frame_len)
 {
-  buffer_clear(&result_buffer);
+  buffer_clear(&response_buffer);
   buffer_clear(&error_buffer);
 
   mrb_state *mrb = worker_mrb;
-  if (!mrb || !method || !url) {
+  if (!mrb || !request_frame) {
     set_error_literal("runtime is not initialized or request input is invalid");
     return PICORB_WORKER_INVALID_STATE;
   }
+  if (request_frame_len < 4 || request_frame_len > PICORB_WORKER_MAX_REQUEST_FRAME_SIZE ||
+      memcmp(request_frame, PICORB_WORKER_REQUEST_MAGIC, 4) != 0) {
+    set_error_literal("invalid or unsupported request frame");
+    return PICORB_WORKER_INVALID_REQUEST;
+  }
 
   int arena_index = mrb_gc_arena_save(mrb);
-  mrb_value method_value = mrb_str_new(mrb, method, method_len);
-  mrb_value url_value = mrb_str_new(mrb, url, url_len);
-  mrb_gv_set(mrb, mrb_intern_lit(mrb, "$picorb_worker_method"), method_value);
-  mrb_gv_set(mrb, mrb_intern_lit(mrb, "$picorb_worker_url"), url_value);
-
+  mrb_sym request_frame_global = mrb_intern_lit(mrb, "$picorb_worker_request_frame");
+  mrb_gv_set(mrb, request_frame_global,
+             mrb_str_new(mrb, (const char *)request_frame, request_frame_len));
   mrb_bool error = FALSE;
   mrb_value result = mrb_protect_error(mrb, execute_dispatch_body, NULL, &error);
-  mrb_gv_set(mrb, mrb_intern_lit(mrb, "$picorb_worker_method"), mrb_nil_value());
-  mrb_gv_set(mrb, mrb_intern_lit(mrb, "$picorb_worker_url"), mrb_nil_value());
+  mrb_gv_set(mrb, request_frame_global, mrb_nil_value());
   if (error || mrb_exception_p(result)) {
     set_error_from_exception(mrb, result);
     mrb_gc_arena_restore(mrb, arena_index);
     return PICORB_WORKER_DISPATCH_ERROR;
   }
-  if (!mrb_string_p(result)) {
-    set_error_literal("PicoRubyWorker.fetch must return a String");
-    mrb_gc_arena_restore(mrb, arena_index);
-    return PICORB_WORKER_RESULT_TYPE_ERROR;
-  }
 
-  int status = buffer_assign(&result_buffer, RSTRING_PTR(result), RSTRING_LEN(result));
-  if (status != PICORB_WORKER_OK) {
-    set_error_literal("failed to allocate the response buffer");
-  }
+  int status = encode_response(mrb, result);
   mrb_gc_arena_restore(mrb, arena_index);
   return status;
 }
 
 EMSCRIPTEN_KEEPALIVE
 uintptr_t
-picorb_worker_result_ptr(void)
+picorb_worker_response_ptr(void)
 {
-  return (uintptr_t)result_buffer.ptr;
+  return (uintptr_t)response_buffer.ptr;
 }
 
 EMSCRIPTEN_KEEPALIVE
 size_t
-picorb_worker_result_len(void)
+picorb_worker_response_len(void)
 {
-  return result_buffer.len;
+  return response_buffer.len;
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -236,6 +355,7 @@ mrb_picoruby_worker_wasm_gem_init(mrb_state *mrb)
 {
   struct RClass *worker = mrb_define_module(mrb, "PicoRubyWorker");
   mrb_define_const(mrb, worker, "VERSION", mrb_str_new_cstr(mrb, picorb_version()));
+  mrb_define_const(mrb, worker, "ABI_VERSION", mrb_fixnum_value(PICORB_WORKER_ABI_VERSION));
 }
 
 void

@@ -1,0 +1,30 @@
+name: Smoke test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rack:
+    name: Rack adapter
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+
+      - name: Test Rack adapter
+        run: bundle exec ruby test/rack_adapter_test.rb
+
+      - name: Test with Rack::Lint
+        run: bundle exec ruby test/rack_lint_test.rb

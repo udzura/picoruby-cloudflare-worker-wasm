@@ -8,6 +8,8 @@ end
 PICORUBY_RAKEFILE = File.join(PICORUBY_ROOT, "Rakefile")
 BUILD_CONFIG = File.join(SPIKE_ROOT, "build_config", "picoruby-worker-wasm.rb")
 DIST_DIR = File.join(SPIKE_ROOT, "dist")
+APP_SOURCE = File.expand_path(ENV.fetch("PICORUBY_APP", "lib/app.rb"), SPIKE_ROOT)
+WORKER_WASM_REVISION = ENV.fetch("PICORUBY_WORKER_WASM_REV", "03ed78cf243bd05039e657cafe809681be5679da")
 
 abort "PicoRuby Rakefile was not found: #{PICORUBY_RAKEFILE}" unless File.file?(PICORUBY_RAKEFILE)
 
@@ -26,15 +28,35 @@ end
 
 def build_runtime!
   verify_emscripten!
+  refresh_worker_wasm_checkout!
   sh({ "CONFIG" => BUILD_CONFIG }, "rake", "-f", PICORUBY_RAKEFILE)
+end
+
+def refresh_worker_wasm_checkout!
+  return if ENV["PICORUBY_WORKER_WASM_GEM_DIR"]
+
+  checkout = File.join(
+    PICORUBY_ROOT,
+    "build",
+    "repos",
+    "picoruby-worker-wasm",
+    "picoruby-cloudflare-worker-wasm",
+  )
+  return unless File.directory?(File.join(checkout, ".git"))
+
+  available = system("git", "-C", checkout, "cat-file", "-e", "#{WORKER_WASM_REVISION}^{commit}", out: File::NULL, err: File::NULL)
+  return if available
+
+  sh "git", "-C", checkout, "fetch", "origin", "--tags"
 end
 
 def compile_app!
   mrbc = File.join(PICORUBY_ROOT, "build", "host", "bin", "mrbc")
   abort "mrbc was not found: #{mrbc}" unless File.executable?(mrbc)
+  abort "PicoRuby app source was not found: #{APP_SOURCE}" unless File.file?(APP_SOURCE)
 
   FileUtils.mkdir_p(DIST_DIR)
-  sh mrbc, "-o", File.join(DIST_DIR, "app.bin"), File.join(SPIKE_ROOT, "app.rb")
+  sh mrbc, "-o", File.join(DIST_DIR, "app.bin"), APP_SOURCE
 end
 
 def stage_runtime!
@@ -47,14 +69,14 @@ def stage_runtime!
   end
 end
 
-desc "Build the PicoRuby Worker runtime and compile app.rb"
+desc "Build the PicoRuby Worker runtime and compile the selected app"
 task :build do
   build_runtime!
   compile_app!
   stage_runtime!
 end
 
-desc "Compile app.rb after the runtime has already been built"
+desc "Compile the selected app after the runtime has already been built"
 task :app do
   compile_app!
 end

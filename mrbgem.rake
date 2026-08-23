@@ -11,10 +11,11 @@ MRuby::Gem::Specification.new("picoruby-worker-wasm") do |spec|
   bin_dir = File.join(build.build_dir, "bin")
   output_js = File.join(bin_dir, "picoruby-worker.js")
   exported_functions = %w[
+    _picorb_worker_abi_version
     _picorb_worker_init
-    _picorb_worker_dispatch
-    _picorb_worker_result_ptr
-    _picorb_worker_result_len
+    _picorb_worker_dispatch_v1
+    _picorb_worker_response_ptr
+    _picorb_worker_response_len
     _picorb_worker_error_ptr
     _picorb_worker_error_len
     _malloc
