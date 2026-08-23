@@ -1,5 +1,13 @@
 # picoruby-cloudflare-worker-wasm
 
+Minimal PicoRuby runtime support for [Cloudflare Workers](https://workers.cloudflare.com/).
+
+`spike/` is a runnable, bindings-free Cloudflare Workers project. It builds a
+small PicoRuby WebAssembly runtime, compiles `spike/app.rb` to bytecode, and
+imports both artifacts from the Worker module.
+
+See [spike/README.md](spike/README.md) for setup and build instructions.
+
 An external PicoRuby mrbgem that builds a minimal, synchronous runtime for
 Cloudflare Workers.
 

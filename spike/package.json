@@ -1,0 +1,15 @@
+{
+  "name": "picoruby-cloudflare-worker-spike",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "rake -f Rakefile build",
+    "build:app": "rake -f Rakefile app",
+    "clean": "rake -f Rakefile clean",
+    "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log wrangler dev",
+    "check": "WRANGLER_LOG_PATH=.wrangler/wrangler.log wrangler deploy --dry-run --outdir .wrangler-dist"
+  },
+  "devDependencies": {
+    "wrangler": "4.125.0"
+  }
+}
