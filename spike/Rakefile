@@ -8,6 +8,7 @@ end
 PICORUBY_RAKEFILE = File.join(PICORUBY_ROOT, "Rakefile")
 BUILD_CONFIG = File.join(SPIKE_ROOT, "build_config", "picoruby-worker-wasm.rb")
 DIST_DIR = File.join(SPIKE_ROOT, "dist")
+WORKER_WASM_REVISION = ENV.fetch("PICORUBY_WORKER_WASM_REV", "03ed78cf243bd05039e657cafe809681be5679da")
 
 abort "PicoRuby Rakefile was not found: #{PICORUBY_RAKEFILE}" unless File.file?(PICORUBY_RAKEFILE)
 
@@ -26,7 +27,24 @@ end
 
 def build_runtime!
   verify_emscripten!
+  refresh_worker_wasm_checkout!
   sh({ "CONFIG" => BUILD_CONFIG }, "rake", "-f", PICORUBY_RAKEFILE)
+end
+
+def refresh_worker_wasm_checkout!
+  checkout = File.join(
+    PICORUBY_ROOT,
+    "build",
+    "repos",
+    "picoruby-worker-wasm",
+    "picoruby-cloudflare-worker-wasm",
+  )
+  return unless File.directory?(File.join(checkout, ".git"))
+
+  available = system("git", "-C", checkout, "cat-file", "-e", "#{WORKER_WASM_REVISION}^{commit}", out: File::NULL, err: File::NULL)
+  return if available
+
+  sh "git", "-C", checkout, "fetch", "origin", "--tags"
 end
 
 def compile_app!

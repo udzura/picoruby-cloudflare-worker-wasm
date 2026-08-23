@@ -18,7 +18,9 @@ MRuby::CrossBuild.new("picoruby-worker-wasm") do |conf|
   conf.ports :worker_wasm
 
   conf.picoruby(alloc_estalloc: false)
+  gem_ref = ENV.fetch("PICORUBY_WORKER_WASM_REF", "0.0.1")
+  gem_revision = ENV.fetch("PICORUBY_WORKER_WASM_REV", "03ed78cf243bd05039e657cafe809681be5679da")
   conf.gem github: "udzura/picoruby-cloudflare-worker-wasm",
-           branch: "master",
-           checksum_hash: ENV.fetch("PICORUBY_WORKER_WASM_REV", "0df9efdc7cd32feb2a8abe9d92a7c27317bb4008")
+           branch: gem_ref,
+           checksum_hash: gem_revision
 end

@@ -3,7 +3,7 @@
 This is a bindings-free Cloudflare Workers feasibility project. The runtime is
 built from a local PicoRuby checkout and loads this directory's precompiled
 `app.rb` bytecode. `picoruby-worker-wasm` itself is cloned from GitHub by the
-PicoRuby build system at the revision recorded in
+PicoRuby build system at the release tag recorded in
 `build_config/picoruby-worker-wasm.rb`.
 
 ## Prerequisites
@@ -51,9 +51,12 @@ The example routes are `/ruby_version`, `/factorial`, and `/hello`. The Worker
 creates one PicoRuby VM per Worker isolate. Calls into Ruby are synchronous;
 Cloudflare bindings and asynchronous Ruby are intentionally outside this spike.
 
-`PICORUBY_WORKER_WASM_REV` can override the pinned mrbgem revision for local
-experiments, for example:
+The release tag is paired with its commit SHA so an existing PicoRuby build
+cache is also checked out to the expected source. For local experiments,
+override both values together:
 
 ```console
-PICORUBY_WORKER_WASM_REV=<commit> npm run build
+PICORUBY_WORKER_WASM_REF=master \
+PICORUBY_WORKER_WASM_REV=<commit> \
+npm run build
 ```
