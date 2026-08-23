@@ -42,6 +42,11 @@ npm run dev
 npm run check
 ```
 
+`npm run dev` first compiles `app.rb`, starts Wrangler, and watches `app.rb`.
+Each saved Ruby change runs the equivalent of `npm run build:app`; Wrangler
+then observes the updated `dist/app.bin` and reloads the local Worker. To run
+only the Ruby bytecode watcher, use `npm run watch:app`.
+
 The example routes are `/ruby_version`, `/factorial`, and `/hello`. The Worker
 creates one PicoRuby VM per Worker isolate. Calls into Ruby are synchronous;
 Cloudflare bindings and asynchronous Ruby are intentionally outside this spike.
