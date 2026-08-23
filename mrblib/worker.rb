@@ -283,6 +283,11 @@ module PicoRubyWorker
 
     def self.add_header(env, name, value)
       lower_name = name.downcase
+      if lower_name == "host"
+        env["HTTP_HOST"] = value
+        return
+      end
+
       key = if lower_name == "content-type"
         "CONTENT_TYPE"
       elsif lower_name == "content-length"

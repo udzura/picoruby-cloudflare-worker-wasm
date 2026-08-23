@@ -97,7 +97,11 @@ frame = request_frame(
   method: "POST",
   path: "/echo%20path",
   query: "name=pico",
-  headers: [["content-type", "application/octet-stream"], ["x-test-header", "yes"]],
+  headers: [
+    ["host", "request.example.com"],
+    ["content-type", "application/octet-stream"],
+    ["x-test-header", "yes"],
+  ],
   body: "\x00\xff".b,
 )
 status, headers, response_body = PicoRubyWorker::RackAdapter.dispatch(frame)
@@ -112,6 +116,7 @@ assert_equal("POST", captured_env["REQUEST_METHOD"], "request method is mapped")
 assert_equal("/echo%20path", captured_env["PATH_INFO"], "path is mapped")
 assert_equal("name=pico", captured_env["QUERY_STRING"], "query is mapped")
 assert_equal("application/octet-stream", captured_env["CONTENT_TYPE"], "content type uses its CGI key")
+assert_equal("request.example.com", captured_env["HTTP_HOST"], "Host header replaces the URL-derived authority")
 assert_equal("yes", captured_env["HTTP_X_TEST_HEADER"], "headers use HTTP_ CGI keys")
 assert_equal("HTTP/2", captured_env["SERVER_PROTOCOL"], "HTTP protocol is mapped")
 assert_equal([201, nil], finished, "response-finished callback runs")
