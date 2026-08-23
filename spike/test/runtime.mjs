@@ -3,8 +3,10 @@ import fs from "node:fs";
 
 import createPicoRuby from "../dist/picoruby-worker.js";
 import {
+  closeRuntime,
   createRuntime,
   dispatch,
+  handleRequest,
   RequestBodyTooLargeError,
 } from "../src/runtime.js";
 
@@ -12,10 +14,21 @@ const wasmModule = new WebAssembly.Module(
   fs.readFileSync(new URL("../dist/picoruby-worker.wasm", import.meta.url)),
 );
 const imports = WebAssembly.Module.imports(wasmModule);
-assert.equal(
-  imports.some(({ module }) => module.startsWith("wasi_")),
-  false,
-  "the Worker runtime must not import WASI",
+const allowedWasiImports = new Set([
+  "fd_close",
+  "fd_fdstat_get",
+  "fd_seek",
+  "fd_write",
+]);
+const unexpectedWasiImports = imports.filter(
+  ({ module, name }) =>
+    module.startsWith("wasi_") &&
+    (module !== "wasi_snapshot_preview1" || !allowedWasiImports.has(name)),
+);
+assert.deepEqual(
+  unexpectedWasiImports,
+  [],
+  "only Emscripten-provided stdio shims may use the WASI namespace",
 );
 
 const runtime = await createRuntime(
@@ -108,6 +121,12 @@ const missingResponse = await dispatch(
 assert.equal(missingResponse.status, 404);
 assert.equal(await missingResponse.text(), "Not found");
 
+const jspiResponse = await dispatch(
+  runtime,
+  new Request("https://example.com/debug/jspi"),
+);
+assert.equal(await jspiResponse.text(), "jspi_add=42,50");
+
 await assert.rejects(
   dispatch(
     runtime,
@@ -120,5 +139,47 @@ await assert.rejects(
   ),
   RequestBodyTooLargeError,
 );
+
+await closeRuntime(runtime);
+
+let createdRuntimeCount = 0;
+let asyncHostCallCount = 0;
+const countedCreatePicoRuby = async (options) => {
+  createdRuntimeCount += 1;
+  return await createPicoRuby(options);
+};
+
+const firstVmResponse = await handleRequest(
+  countedCreatePicoRuby,
+  wasmModule,
+  fs.readFileSync(new URL("../dist/app.bin", import.meta.url)),
+  new Request("https://example.com/factorial"),
+  {
+    jspiAdd: async (left, right) => {
+      asyncHostCallCount += 1;
+      await Promise.resolve();
+      return left + right;
+    },
+  },
+);
+assert.equal(await firstVmResponse.text(), "factorial(6) = 720");
+assert.equal(asyncHostCallCount, 0, "ordinary requests do not call the async host");
+
+const secondVmResponse = await handleRequest(
+  countedCreatePicoRuby,
+  wasmModule,
+  fs.readFileSync(new URL("../dist/app.bin", import.meta.url)),
+  new Request("https://example.com/debug/jspi"),
+  {
+    jspiAdd: async (left, right) => {
+      asyncHostCallCount += 1;
+      await Promise.resolve();
+      return left + right;
+    },
+  },
+);
+assert.equal(await secondVmResponse.text(), "jspi_add=42,50");
+assert.equal(createdRuntimeCount, 2, "each request gets a fresh PicoRuby VM");
+assert.equal(asyncHostCallCount, 2, "Ruby resumes across repeated async host calls");
 
 console.log("PicoRuby Rack runtime tests passed");

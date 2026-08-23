@@ -7,6 +7,12 @@ MRuby::CrossBuild.new("picoruby-worker-wasm") do |conf|
   conf.linker.command = "emcc"
   conf.archiver.command = "emar"
 
+  # JSPI cannot suspend through the JavaScript wrappers used by Emscripten's
+  # default setjmp/longjmp implementation. Keep mruby's exception frames in
+  # Wasm so an asynchronous host call can suspend directly through the VM.
+  conf.cc.flags << "-sSUPPORT_LONGJMP=wasm"
+  conf.cc.flags << "-sWASM_LEGACY_EXCEPTIONS=0"
+
   conf.cc.defines << "PICORB_PLATFORM_WASM"
   conf.cc.defines << "PICORB_PLATFORM_CLOUDFLARE_WORKERS"
   conf.cc.defines << "MRB_32BIT"

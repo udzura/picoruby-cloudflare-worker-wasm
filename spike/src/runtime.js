@@ -198,8 +198,13 @@ export function decodeRackResponse(frame, requestMethod = "GET") {
   return new Response(bodyAllowed ? body : null, { status, headers });
 }
 
-export async function createRuntime(createPicoRuby, wasmModule, appBytecode) {
+export async function createRuntime(createPicoRuby, wasmModule, appBytecode, options = {}) {
+  const jspiAdd = options.jspiAdd ?? (async (left, right) => {
+    await Promise.resolve();
+    return left + right;
+  });
   const module = await createPicoRuby({
+    picorbWorkerJspiAdd: jspiAdd,
     instantiateWasm(imports, successCallback) {
       const instance = new WebAssembly.Instance(wasmModule, imports);
       successCallback(instance, wasmModule);
@@ -215,7 +220,13 @@ export async function createRuntime(createPicoRuby, wasmModule, appBytecode) {
   const bytecode = new Uint8Array(appBytecode);
   const pointer = copyToWasm(module, bytecode);
   try {
-    const status = module._picorb_worker_init(pointer, bytecode.byteLength);
+    const status = await module.ccall(
+      "picorb_worker_init",
+      "number",
+      ["number", "number"],
+      [pointer, bytecode.byteLength],
+      { async: true },
+    );
     if (status !== 0) {
       throw new Error(`PicoRuby initialization failed: ${readRuntimeError(module)}`);
     }
@@ -225,11 +236,42 @@ export async function createRuntime(createPicoRuby, wasmModule, appBytecode) {
   return module;
 }
 
+export async function closeRuntime(module) {
+  await module.ccall(
+    "picorb_worker_close",
+    null,
+    [],
+    [],
+    { async: true },
+  );
+}
+
+export async function handleRequest(
+  createPicoRuby,
+  wasmModule,
+  appBytecode,
+  request,
+  options = {},
+) {
+  const module = await createRuntime(createPicoRuby, wasmModule, appBytecode, options);
+  try {
+    return await dispatch(module, request, options);
+  } finally {
+    await closeRuntime(module);
+  }
+}
+
 export async function dispatch(module, request, options = {}) {
   const frame = await encodeRackRequest(request, options);
   const pointer = copyToWasm(module, frame);
   try {
-    const status = module._picorb_worker_dispatch_v1(pointer, frame.byteLength);
+    const status = await module.ccall(
+      "picorb_worker_dispatch_v1",
+      "number",
+      ["number", "number"],
+      [pointer, frame.byteLength],
+      { async: true },
+    );
     if (status !== 0) {
       throw new Error(`PicoRuby dispatch failed: ${readRuntimeError(module)}`);
     }

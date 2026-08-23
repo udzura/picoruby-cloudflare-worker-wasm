@@ -77,14 +77,18 @@ The example registers `App` with
 - `POST /echo?name=pico`, which returns the binary request body
 - any method at `/debug/request`, which dumps the Rack request state
 - any method at `/debug/raise`, which raises a dummy application exception
+- `GET /debug/jspi`, which suspends and resumes Ruby twice through JSPI
 
-`npm test` loads the generated Wasm in Node and checks the ABI version, lack of
-WASI imports, Rack routing/env behavior, binary bodies, repeated cookies, HEAD,
-404, and the request body size limit.
+`npm test` loads the generated Wasm in Node and checks the ABI version, expected
+Emscripten imports, Rack routing/env behavior, binary bodies, repeated cookies,
+HEAD, 404, the request body size limit, per-request VM creation, and JSPI
+suspension/resumption.
 
-The Worker creates one PicoRuby VM per isolate. JavaScript buffers each Request
-asynchronously, then Ruby dispatch and response generation are synchronous.
-Cloudflare bindings and asynchronous Ruby are intentionally outside this spike.
+The Worker creates a fresh PicoRuby VM for each request. JavaScript buffers each
+Request asynchronously, then Ruby dispatch and response generation are
+synchronous except for JSPI-backed host calls.
+`/debug/jspi` is only a feasibility probe; production Cloudflare binding
+adapters and rejection-to-Ruby-exception mapping remain outside this spike.
 
 The release tag is paired with its commit SHA so an existing PicoRuby build
 cache is also checked out to the expected source. For local experiments,

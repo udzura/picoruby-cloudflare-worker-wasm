@@ -49,6 +49,20 @@ static mrb_value dispatch_proc;
 static picorb_worker_buffer response_buffer = { NULL, 0, 0 };
 static picorb_worker_buffer error_buffer = { NULL, 0, 0 };
 
+EM_ASYNC_JS(int, picorb_worker_jspi_add, (int left, int right), {
+  return await Module["picorbWorkerJspiAdd"](left, right);
+});
+
+static mrb_value
+mrb_jspi_probe_add(mrb_state *mrb, mrb_value self)
+{
+  (void)self;
+  mrb_int left;
+  mrb_int right;
+  mrb_get_args(mrb, "ii", &left, &right);
+  return mrb_int_value(mrb, picorb_worker_jspi_add((int)left, (int)right));
+}
+
 static int
 buffer_reserve(picorb_worker_buffer *buffer, size_t len)
 {
@@ -80,6 +94,15 @@ buffer_clear(picorb_worker_buffer *buffer)
 {
   buffer->len = 0;
   if (buffer->ptr) buffer->ptr[0] = '\0';
+}
+
+static void
+buffer_release(picorb_worker_buffer *buffer)
+{
+  free(buffer->ptr);
+  buffer->ptr = NULL;
+  buffer->len = 0;
+  buffer->capacity = 0;
 }
 
 static void
@@ -287,6 +310,19 @@ picorb_worker_init(const uint8_t *mrb_data, size_t mrb_len)
 }
 
 EMSCRIPTEN_KEEPALIVE
+void
+picorb_worker_close(void)
+{
+  if (worker_mrb) {
+    mrb_close(worker_mrb);
+    worker_mrb = NULL;
+  }
+  dispatch_proc = mrb_nil_value();
+  buffer_release(&response_buffer);
+  buffer_release(&error_buffer);
+}
+
+EMSCRIPTEN_KEEPALIVE
 int
 picorb_worker_dispatch_v1(const uint8_t *request_frame, size_t request_frame_len)
 {
@@ -356,6 +392,9 @@ mrb_picoruby_worker_wasm_gem_init(mrb_state *mrb)
   struct RClass *worker = mrb_define_module(mrb, "PicoRubyWorker");
   mrb_define_const(mrb, worker, "VERSION", mrb_str_new_cstr(mrb, picorb_version()));
   mrb_define_const(mrb, worker, "ABI_VERSION", mrb_fixnum_value(PICORB_WORKER_ABI_VERSION));
+
+  struct RClass *jspi_probe = mrb_define_module_under(mrb, worker, "JSPIProbe");
+  mrb_define_class_method_id(mrb, jspi_probe, MRB_SYM(add), mrb_jspi_probe_add, MRB_ARGS_REQ(2));
 }
 
 void
