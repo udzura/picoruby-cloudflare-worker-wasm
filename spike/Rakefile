@@ -9,6 +9,7 @@ PICORUBY_RAKEFILE = File.join(PICORUBY_ROOT, "Rakefile")
 BUILD_CONFIG = File.join(SPIKE_ROOT, "build_config", "picoruby-worker-wasm.rb")
 DIST_DIR = File.join(SPIKE_ROOT, "dist")
 APP_SOURCE = File.expand_path(ENV.fetch("PICORUBY_APP", "lib/app.rb"), SPIKE_ROOT)
+KV_TEST_APP_SOURCE = File.join(SPIKE_ROOT, "test", "kv_app.rb")
 WORKER_WASM_REVISION = ENV.fetch("PICORUBY_WORKER_WASM_REV", "03ed78cf243bd05039e657cafe809681be5679da")
 
 abort "PicoRuby Rakefile was not found: #{PICORUBY_RAKEFILE}" unless File.file?(PICORUBY_RAKEFILE)
@@ -50,13 +51,21 @@ def refresh_worker_wasm_checkout!
   sh "git", "-C", checkout, "fetch", "origin", "--tags"
 end
 
-def compile_app!
+def compile_ruby_app!(source, output)
   mrbc = File.join(PICORUBY_ROOT, "build", "host", "bin", "mrbc")
   abort "mrbc was not found: #{mrbc}" unless File.executable?(mrbc)
-  abort "PicoRuby app source was not found: #{APP_SOURCE}" unless File.file?(APP_SOURCE)
+  abort "PicoRuby app source was not found: #{source}" unless File.file?(source)
 
   FileUtils.mkdir_p(DIST_DIR)
-  sh mrbc, "-o", File.join(DIST_DIR, "app.bin"), APP_SOURCE
+  sh mrbc, "-o", output, source
+end
+
+def compile_app!
+  compile_ruby_app!(APP_SOURCE, File.join(DIST_DIR, "app.bin"))
+end
+
+def compile_kv_test_app!
+  compile_ruby_app!(KV_TEST_APP_SOURCE, File.join(DIST_DIR, "kv_app.bin"))
 end
 
 def stage_runtime!
@@ -73,6 +82,7 @@ desc "Build the PicoRuby Worker runtime and compile the selected app"
 task :build do
   build_runtime!
   compile_app!
+  compile_kv_test_app!
   stage_runtime!
 end
 

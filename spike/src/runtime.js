@@ -12,6 +12,63 @@ export class RequestBodyTooLargeError extends Error {
   }
 }
 
+async function unavailableKvGet() {
+  throw new Error("PICORUBY_KV binding is not configured");
+}
+
+async function unavailableKvSet() {
+  throw new Error("PICORUBY_KV binding is not configured");
+}
+
+const defaultRuntimeBindings = {
+  picorbWorkerJspiAdd: async (left, right) => {
+    await Promise.resolve();
+    return left + right;
+  },
+  picorbWorkerKvGet: unavailableKvGet,
+  picorbWorkerKvSet: unavailableKvSet,
+};
+
+export function mergeBindings(...bindingSets) {
+  const bindings = {};
+
+  for (const bindingSet of bindingSets) {
+    if (!bindingSet || typeof bindingSet !== "object" || Array.isArray(bindingSet)) {
+      throw new TypeError("PicoRuby Worker bindings must be an object");
+    }
+
+    for (const [name, callback] of Object.entries(bindingSet)) {
+      if (!name.startsWith("picorbWorker") || typeof callback !== "function") {
+        throw new TypeError(`Invalid PicoRuby Worker binding: ${name}`);
+      }
+      if (Object.hasOwn(bindings, name)) {
+        throw new Error(`Duplicate PicoRuby Worker binding: ${name}`);
+      }
+      bindings[name] = callback;
+    }
+  }
+
+  return bindings;
+}
+
+export function createCloudflareKvBindings(env) {
+  const namespace = env.PICORUBY_KV;
+  if (!namespace || typeof namespace.get !== "function" || typeof namespace.put !== "function") {
+    throw new Error("PICORUBY_KV binding is not configured");
+  }
+
+  return {
+    picorbWorkerKvGet: async (key) => {
+      const value = await namespace.get(key, "arrayBuffer");
+      return value === null ? null : new Uint8Array(value);
+    },
+    picorbWorkerKvSet: async (key, value) => {
+      const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+      await namespace.put(key, bytes.buffer);
+    },
+  };
+}
+
 class FrameWriter {
   constructor() {
     this.parts = [];
@@ -198,13 +255,11 @@ export function decodeRackResponse(frame, requestMethod = "GET") {
   return new Response(bodyAllowed ? body : null, { status, headers });
 }
 
-export async function createRuntime(createPicoRuby, wasmModule, appBytecode, options = {}) {
-  const jspiAdd = options.jspiAdd ?? (async (left, right) => {
-    await Promise.resolve();
-    return left + right;
-  });
+export async function createRuntime(createPicoRuby, wasmModule, appBytecode, runtimeBindings = {}) {
+  const bindings = mergeBindings(runtimeBindings);
   const module = await createPicoRuby({
-    picorbWorkerJspiAdd: jspiAdd,
+    ...defaultRuntimeBindings,
+    ...bindings,
     instantiateWasm(imports, successCallback) {
       const instance = new WebAssembly.Instance(wasmModule, imports);
       successCallback(instance, wasmModule);
@@ -251,18 +306,19 @@ export async function handleRequest(
   wasmModule,
   appBytecode,
   request,
-  options = {},
+  ...bindingSets
 ) {
-  const module = await createRuntime(createPicoRuby, wasmModule, appBytecode, options);
+  const bindings = mergeBindings(...bindingSets);
+  const module = await createRuntime(createPicoRuby, wasmModule, appBytecode, bindings);
   try {
-    return await dispatch(module, request, options);
+    return await dispatch(module, request);
   } finally {
     await closeRuntime(module);
   }
 }
 
-export async function dispatch(module, request, options = {}) {
-  const frame = await encodeRackRequest(request, options);
+export async function dispatch(module, request, requestOptions = {}) {
+  const frame = await encodeRackRequest(request, requestOptions);
   const pointer = copyToWasm(module, frame);
   try {
     const status = await module.ccall(

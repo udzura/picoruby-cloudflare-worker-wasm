@@ -78,6 +78,44 @@ The example registers `App` with
 - any method at `/debug/request`, which dumps the Rack request state
 - any method at `/debug/raise`, which raises a dummy application exception
 - `GET /debug/jspi`, which suspends and resumes Ruby twice through JSPI
+- any method at `/kv/set`, which writes the fixed `spike-key` KV sample value
+- any method at `/kv/get`, which reads the fixed `spike-key` KV sample value
+
+`wrangler.jsonc` binds one namespace as `PICORUBY_KV`. Use local development
+when exercising the sample write endpoint. To verify the binary-safe
+`Cloudflare::KV.set/get` bridge against Wrangler's local KV implementation,
+select `test/kv_app.rb` as the Ruby entrypoint:
+
+```console
+PICORUBY_APP=test/kv_app.rb npm run dev
+curl http://localhost:8787/kv/get
+curl http://localhost:8787/kv/set
+curl http://localhost:8787/kv/get
+```
+
+See [Cloudflare KV](../docs/cloudflare-kv.md) for the Ruby API and its current
+limits.
+
+## Host binding factories
+
+`handleRequest` accepts any number of binding fragments. Each factory captures
+the current Worker `env` and returns only the Emscripten callbacks it owns:
+
+```js
+handleRequest(
+  createPicoRuby,
+  picoRubyWasm,
+  appBytecode,
+  request,
+  createFetchBindings(env),
+  createCloudflareKvBindings(env),
+  createCloudflareD1Bindings(env),
+);
+```
+
+Callback names use the `picorbWorker` prefix. Duplicate names are rejected, so
+a later binding cannot silently replace an existing host operation. HTTP body
+limits remain `dispatch` request options and are not binding callbacks.
 
 `npm test` loads the generated Wasm in Node and checks the ABI version, expected
 Emscripten imports, Rack routing/env behavior, binary bodies, repeated cookies,
@@ -88,7 +126,8 @@ The Worker creates a fresh PicoRuby VM for each request. JavaScript buffers each
 Request asynchronously, then Ruby dispatch and response generation are
 synchronous except for JSPI-backed host calls.
 `/debug/jspi` is only a feasibility probe; production Cloudflare binding
-adapters and rejection-to-Ruby-exception mapping remain outside this spike.
+adapters other than KV and rejection-to-Ruby-exception mapping remain outside
+this spike.
 
 The release tag is paired with its commit SHA so an existing PicoRuby build
 cache is also checked out to the expected source. For local experiments,

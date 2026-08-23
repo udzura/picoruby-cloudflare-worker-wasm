@@ -8,6 +8,8 @@ WebAssembly, compiles `spike/lib/app.rb` to mruby bytecode, and imports both
 artifacts from the Worker module.
 
 See [spike/README.md](spike/README.md) for setup and build instructions.
+The first Cloudflare binding is documented in
+[docs/cloudflare-kv.md](docs/cloudflare-kv.md).
 
 ## Rack application
 
@@ -40,8 +42,9 @@ contract, limits, `Rack::Lint` results, and asynchronous roadmap.
 - direct handler registration without `config.ru`;
 - asynchronous request buffering in JavaScript and experimental JSPI-backed
   host calls during Ruby dispatch;
-- no filesystem, sockets, runtime Ruby compilation, production Cloudflare
-  binding adapters, or streaming bodies.
+- a fixed Cloudflare KV binding with binary-safe `get` and `set`;
+- no filesystem, sockets, runtime Ruby compilation, other Cloudflare binding
+  adapters, or streaming bodies.
 
 `mruby-task` remains linked because it is required by `picoruby-mruby`, but the
 provided Worker HAL supports neither scheduling nor Fiber-based task APIs.
