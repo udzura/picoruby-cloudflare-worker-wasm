@@ -1,9 +1,10 @@
 # PicoRuby Cloudflare Workers spike
 
 This is a bindings-free Cloudflare Workers feasibility project. It builds a
-PicoRuby Wasm runtime, compiles `app.rb` to bytecode, and exposes the app through
-the mrbgem's Rack-compatible handler. The released `picoruby-worker-wasm` is
-resolved from GitHub at the tag recorded in the build configuration.
+PicoRuby Wasm runtime, compiles `lib/app.rb` to bytecode, and exposes the app
+through the mrbgem's Rack-compatible handler. The released
+`picoruby-worker-wasm` is resolved from GitHub at the tag recorded in the build
+configuration.
 
 ## Prerequisites
 
@@ -26,7 +27,7 @@ npm run build
 1. invokes PicoRuby's Rakefile with `build_config/picoruby-worker-wasm.rb`;
 2. clones `udzura/picoruby-cloudflare-worker-wasm` as the mrbgem dependency;
 3. generates `dist/picoruby-worker.js` and `dist/picoruby-worker.wasm`;
-4. compiles `app.rb` with the matching host `mrbc` into `dist/app.bin`.
+4. compiles `lib/app.rb` with the matching host `mrbc` into `dist/app.bin`.
 
 When developing unreleased changes in the parent mrbgem, bypass the GitHub pin:
 
@@ -34,11 +35,25 @@ When developing unreleased changes in the parent mrbgem, bypass the GitHub pin:
 PICORUBY_WORKER_WASM_GEM_DIR=.. npm run build
 ```
 
-After changing only `app.rb`, rebuild just the bytecode:
+After changing only the selected app, rebuild just the bytecode:
 
 ```console
 npm run build:app
 ```
+
+Select a different Ruby entrypoint with `PICORUBY_APP`. Relative paths are
+resolved from `spike/`; absolute paths are also accepted. The generated file
+remains `dist/app.bin`, so the Worker glue and Wrangler configuration do not
+change. Without this environment variable, `lib/app.rb` is used:
+
+```console
+PICORUBY_APP=apps/debug.rb npm run dev
+PICORUBY_APP=/absolute/path/to/production.rb npm run build:app
+```
+
+Restart `npm run dev` when changing `PICORUBY_APP`. The watcher observes only
+the selected entrypoint; changes to files loaded by that entrypoint do not yet
+trigger a rebuild.
 
 Run locally, execute the generated-Wasm test, or validate the deploy bundle:
 
@@ -48,10 +63,10 @@ npm test
 npm run check
 ```
 
-`npm run dev` first compiles `app.rb`, starts Wrangler, and watches `app.rb`.
-Each saved Ruby change runs the equivalent of `npm run build:app`; Wrangler
-then observes the updated `dist/app.bin` and reloads the local Worker. To run
-only the Ruby bytecode watcher, use `npm run watch:app`.
+`npm run dev` first compiles the selected app, starts Wrangler, and watches its
+source file. Each saved change runs the equivalent of `npm run build:app`;
+Wrangler then observes the updated `dist/app.bin` and reloads the local Worker.
+To run only the Ruby bytecode watcher, use `npm run watch:app`.
 
 The example registers `App` with
 `Rackup::Handler::CloudflareWorker.run(App)` and exposes:

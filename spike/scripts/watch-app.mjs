@@ -1,9 +1,13 @@
 import { spawn } from "node:child_process";
 import { watch } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, relative, resolve } from "node:path";
 
 const spikeRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const appSource = resolve(spikeRoot, process.env.PICORUBY_APP || "lib/app.rb");
+const appDirectory = dirname(appSource);
+const appFilename = basename(appSource);
+const appLabel = relative(spikeRoot, appSource) || appFilename;
 const withWrangler = process.argv.includes("--with-wrangler");
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 let pending = false;
@@ -35,10 +39,10 @@ async function buildApp() {
   building = true;
   try {
     await run(npm, ["run", "build:app"], { cwd: spikeRoot });
-    console.log("[picoruby] app.bin rebuilt");
+    console.log(`[picoruby] ${appLabel} built as app.bin`);
     return true;
   } catch (error) {
-    console.error(`[picoruby] app.rb build failed: ${error.message}`);
+    console.error(`[picoruby] ${appLabel} build failed: ${error.message}`);
     return false;
   } finally {
     building = false;
@@ -77,12 +81,12 @@ function stop(signal) {
 }
 
 if (!(await buildApp())) process.exit(1);
-const watcher = watch(spikeRoot, { recursive: false }, (_event, filename) => {
-  if (filename && filename.toString() === "app.rb") scheduleBuild();
+const watcher = watch(appDirectory, { recursive: false }, (_event, filename) => {
+  if (filename && filename.toString() === appFilename) scheduleBuild();
 });
 
 process.on("SIGINT", () => stop("SIGINT"));
 process.on("SIGTERM", () => stop("SIGTERM"));
 
-console.log("[picoruby] watching app.rb");
+console.log(`[picoruby] watching ${appSource}`);
 if (withWrangler) startWrangler();

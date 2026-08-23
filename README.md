@@ -4,7 +4,7 @@ An external PicoRuby mrbgem that builds a small, synchronous Rack-compatible
 runtime for [Cloudflare Workers](https://workers.cloudflare.com/).
 
 `spike/` is a runnable, bindings-free Worker project. It builds PicoRuby as
-WebAssembly, compiles `spike/app.rb` to mruby bytecode, and imports both
+WebAssembly, compiles `spike/lib/app.rb` to mruby bytecode, and imports both
 artifacts from the Worker module.
 
 See [spike/README.md](spike/README.md) for setup and build instructions.
