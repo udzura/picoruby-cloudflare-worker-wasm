@@ -32,6 +32,8 @@ def build_runtime!
 end
 
 def refresh_worker_wasm_checkout!
+  return if ENV["PICORUBY_WORKER_WASM_GEM_DIR"]
+
   checkout = File.join(
     PICORUBY_ROOT,
     "build",

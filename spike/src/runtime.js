@@ -1,5 +1,87 @@
+const ABI_VERSION = 1;
+const REQUEST_MAGIC = new Uint8Array([0x50, 0x52, 0x51, 0x31]); // PRQ1
+const RESPONSE_MAGIC = new Uint8Array([0x50, 0x52, 0x52, 0x31]); // PRR1
+const DEFAULT_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+export class RequestBodyTooLargeError extends Error {
+  constructor(limit) {
+    super(`Request body exceeds ${limit} bytes`);
+    this.name = "RequestBodyTooLargeError";
+  }
+}
+
+class FrameWriter {
+  constructor() {
+    this.parts = [];
+    this.length = 0;
+  }
+
+  appendBytes(bytes) {
+    this.parts.push(bytes);
+    this.length += bytes.byteLength;
+  }
+
+  appendU32(value) {
+    if (!Number.isSafeInteger(value) || value < 0 || value > 0xffffffff) {
+      throw new Error(`Value cannot be encoded as u32: ${value}`);
+    }
+    const bytes = new Uint8Array(4);
+    new DataView(bytes.buffer).setUint32(0, value, true);
+    this.appendBytes(bytes);
+  }
+
+  appendString(value) {
+    this.appendLengthPrefixedBytes(encoder.encode(value));
+  }
+
+  appendLengthPrefixedBytes(bytes) {
+    this.appendU32(bytes.byteLength);
+    this.appendBytes(bytes);
+  }
+
+  finish() {
+    const frame = new Uint8Array(this.length);
+    let offset = 0;
+    for (const part of this.parts) {
+      frame.set(part, offset);
+      offset += part.byteLength;
+    }
+    return frame;
+  }
+}
+
+class FrameReader {
+  constructor(frame) {
+    this.frame = frame;
+    this.offset = 0;
+  }
+
+  readBytes(length) {
+    if (!Number.isSafeInteger(length) || length < 0 || this.offset + length > this.frame.byteLength) {
+      throw new Error("Truncated PicoRuby Worker response frame");
+    }
+    const bytes = this.frame.subarray(this.offset, this.offset + length);
+    this.offset += length;
+    return bytes;
+  }
+
+  readU32() {
+    const bytes = this.readBytes(4);
+    return new DataView(bytes.buffer, bytes.byteOffset, 4).getUint32(0, true);
+  }
+
+  readString() {
+    return decoder.decode(this.readBytes(this.readU32()));
+  }
+
+  finish() {
+    if (this.offset !== this.frame.byteLength) {
+      throw new Error("PicoRuby Worker response frame has trailing bytes");
+    }
+  }
+}
 
 function copyToWasm(module, bytes) {
   const size = Math.max(bytes.byteLength, 1);
@@ -24,6 +106,98 @@ function readRuntimeError(module) {
   );
 }
 
+async function readRequestBody(request, limit) {
+  if (!request.body) return new Uint8Array();
+
+  const contentLength = request.headers.get("content-length");
+  if (contentLength !== null) {
+    const declaredLength = Number(contentLength);
+    if (Number.isFinite(declaredLength) && declaredLength > limit) {
+      throw new RequestBodyTooLargeError(limit);
+    }
+  }
+
+  const reader = request.body.getReader();
+  const chunks = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > limit) {
+        await reader.cancel("PicoRuby request body limit exceeded");
+        throw new RequestBodyTooLargeError(limit);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body;
+}
+
+export async function encodeRackRequest(request, options = {}) {
+  const maxRequestBodyBytes = options.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES;
+  const url = new URL(request.url);
+  const scheme = url.protocol.slice(0, -1);
+  const port = url.port || (scheme === "https" ? "443" : "80");
+  const protocol = request.cf?.httpProtocol || "HTTP/1.1";
+  const headers = Array.from(request.headers.entries());
+  const body = await readRequestBody(request, maxRequestBodyBytes);
+
+  const writer = new FrameWriter();
+  writer.appendBytes(REQUEST_MAGIC);
+  writer.appendString(request.method);
+  writer.appendString(scheme);
+  writer.appendString(url.hostname);
+  writer.appendString(port);
+  writer.appendString(url.host);
+  writer.appendString(url.pathname || "/");
+  writer.appendString(url.search.length > 0 ? url.search.slice(1) : "");
+  writer.appendString(protocol);
+  writer.appendU32(headers.length);
+  for (const [name, value] of headers) {
+    writer.appendString(name);
+    writer.appendString(value);
+  }
+  writer.appendLengthPrefixedBytes(body);
+  return writer.finish();
+}
+
+export function decodeRackResponse(frame, requestMethod = "GET") {
+  const reader = new FrameReader(frame);
+  const magic = reader.readBytes(RESPONSE_MAGIC.byteLength);
+  for (let index = 0; index < RESPONSE_MAGIC.byteLength; index += 1) {
+    if (magic[index] !== RESPONSE_MAGIC[index]) {
+      throw new Error("Unsupported PicoRuby Worker response frame");
+    }
+  }
+
+  const status = reader.readU32();
+  const headerCount = reader.readU32();
+  if (status < 200 || status > 599 || headerCount > 1024) {
+    throw new Error("Invalid PicoRuby Worker response frame metadata");
+  }
+
+  const headers = new Headers();
+  for (let index = 0; index < headerCount; index += 1) {
+    headers.append(reader.readString(), reader.readString());
+  }
+  const body = reader.readBytes(reader.readU32()).slice();
+  reader.finish();
+
+  const bodyAllowed = requestMethod !== "HEAD" && status !== 204 && status !== 205 && status !== 304;
+  return new Response(bodyAllowed ? body : null, { status, headers });
+}
+
 export async function createRuntime(createPicoRuby, wasmModule, appBytecode) {
   const module = await createPicoRuby({
     instantiateWasm(imports, successCallback) {
@@ -32,6 +206,11 @@ export async function createRuntime(createPicoRuby, wasmModule, appBytecode) {
       return instance.exports;
     },
   });
+
+  const actualAbiVersion = module._picorb_worker_abi_version();
+  if (actualAbiVersion !== ABI_VERSION) {
+    throw new Error(`PicoRuby Worker ABI ${ABI_VERSION} is required (found ${actualAbiVersion})`);
+  }
 
   const bytecode = new Uint8Array(appBytecode);
   const pointer = copyToWasm(module, bytecode);
@@ -46,29 +225,20 @@ export async function createRuntime(createPicoRuby, wasmModule, appBytecode) {
   return module;
 }
 
-export function dispatch(module, request) {
-  const method = encoder.encode(request.method);
-  const url = encoder.encode(request.url);
-  const methodPointer = copyToWasm(module, method);
-  const urlPointer = copyToWasm(module, url);
-
+export async function dispatch(module, request, options = {}) {
+  const frame = await encodeRackRequest(request, options);
+  const pointer = copyToWasm(module, frame);
   try {
-    const status = module._picorb_worker_dispatch(
-      methodPointer,
-      method.byteLength,
-      urlPointer,
-      url.byteLength,
-    );
+    const status = module._picorb_worker_dispatch_v1(pointer, frame.byteLength);
     if (status !== 0) {
       throw new Error(`PicoRuby dispatch failed: ${readRuntimeError(module)}`);
     }
-    return readWasmString(
-      module,
-      module._picorb_worker_result_ptr(),
-      module._picorb_worker_result_len(),
-    );
+
+    const responsePointer = module._picorb_worker_response_ptr();
+    const responseLength = module._picorb_worker_response_len();
+    const responseFrame = module.HEAPU8.slice(responsePointer, responsePointer + responseLength);
+    return decodeRackResponse(responseFrame, request.method);
   } finally {
-    module._free(urlPointer);
-    module._free(methodPointer);
+    module._free(pointer);
   }
 }

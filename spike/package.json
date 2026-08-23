@@ -8,7 +8,8 @@
     "clean": "rake -f Rakefile clean",
     "watch:app": "node scripts/watch-app.mjs",
     "dev": "node scripts/watch-app.mjs --with-wrangler",
-    "check": "WRANGLER_LOG_PATH=.wrangler/wrangler.log wrangler deploy --dry-run --outdir .wrangler-dist"
+    "check": "WRANGLER_LOG_PATH=.wrangler/wrangler.log wrangler deploy --dry-run --outdir .wrangler-dist",
+    "test": "node test/runtime.mjs"
   },
   "devDependencies": {
     "wrangler": "4.125.0"
