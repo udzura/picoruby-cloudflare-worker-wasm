@@ -62,6 +62,8 @@ class App
       lines << "rack.input.bytesize=#{body.bytesize}"
       lines << "rack.input=#{body.inspect}"
       [200, { "content-type" => "text/plain; charset=utf-8" }, [lines.join("\n") + "\n"]]
+    when "/debug/raise"
+      raise "Dummy Rack application error"
     else
       [404, { "content-type" => "text/plain; charset=utf-8" }, ["Not found"]]
     end

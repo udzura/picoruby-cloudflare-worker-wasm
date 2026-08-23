@@ -61,6 +61,7 @@ The example registers `App` with
 - any method at `/hello`
 - `POST /echo?name=pico`, which returns the binary request body
 - any method at `/debug/request`, which dumps the Rack request state
+- any method at `/debug/raise`, which raises a dummy application exception
 
 `npm test` loads the generated Wasm in Node and checks the ABI version, lack of
 WASI imports, Rack routing/env behavior, binary bodies, repeated cookies, HEAD,

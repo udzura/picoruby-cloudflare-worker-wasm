@@ -86,6 +86,21 @@ assert.match(debugBody, /HTTP_X_DEBUG_HEADER="visible"/);
 assert.match(debugBody, /rack\.input\.bytesize=10/);
 assert.match(debugBody, /rack\.input="debug body"/);
 
+await assert.rejects(
+  dispatch(runtime, new Request("https://example.com/debug/raise")),
+  /PicoRuby dispatch failed: #<RuntimeError: Dummy Rack application error>/,
+);
+
+const recoveredResponse = await dispatch(
+  runtime,
+  new Request("https://example.com/factorial"),
+);
+assert.equal(
+  await recoveredResponse.text(),
+  "factorial(6) = 720",
+  "the PicoRuby VM remains usable after an application exception",
+);
+
 const missingResponse = await dispatch(
   runtime,
   new Request("https://example.com/missing"),
