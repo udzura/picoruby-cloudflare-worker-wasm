@@ -1,15 +1,22 @@
 import createPicoRuby from "../dist/picoruby-worker.js";
 import picoRubyWasm from "../dist/picoruby-worker.wasm";
 import appBytecode from "../dist/app.bin";
-import { createRuntime, dispatch, RequestBodyTooLargeError } from "./runtime.js";
-
-const runtimePromise = createRuntime(createPicoRuby, picoRubyWasm, appBytecode);
+import {
+  createCloudflareKvBindings,
+  handleRequest,
+  RequestBodyTooLargeError,
+} from "./runtime.js";
 
 export default {
-  async fetch(request) {
+  async fetch(request, env) {
     try {
-      const runtime = await runtimePromise;
-      return await dispatch(runtime, request);
+      return await handleRequest(
+        createPicoRuby,
+        picoRubyWasm,
+        appBytecode,
+        request,
+        createCloudflareKvBindings(env),
+      );
     } catch (error) {
       console.error(error);
       if (error instanceof RequestBodyTooLargeError) {

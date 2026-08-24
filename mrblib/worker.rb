@@ -467,3 +467,15 @@ module Rackup
     end
   end
 end
+
+module Cloudflare
+  module KV
+    def self.get(key)
+      Cloudflare.kv_get(key)
+    end
+
+    def self.set(key, value)
+      Cloudflare.kv_set(key, value)
+    end
+  end
+end

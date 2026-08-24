@@ -23,9 +23,10 @@ The adapter currently provides:
 - reverse-order `rack.response_finished` callbacks;
 - empty response bodies for HEAD, 204, 205, and 304.
 
-The JavaScript host reads the Worker `Request` body asynchronously. After that
-read completes, C and Ruby dispatch are synchronous and the complete response
-is buffered before a Worker `Response` is created.
+The JavaScript host reads the Worker `Request` body asynchronously. The complete
+response is still buffered before a Worker `Response` is created. Ruby dispatch
+is synchronous from the application's perspective, but a C-backed method may
+suspend the Wasm stack through JSPI while awaiting a JavaScript Promise.
 
 ## Rack::Lint status
 
@@ -65,12 +66,16 @@ and standard-library subset.
 
 ## Asynchronous evolution
 
-Asynchronous Ruby execution is a later stage, not part of ABI v1. Cloudflare
-binding calls cannot simply block the current synchronous C entry point. The
-next design needs an explicit suspend/resume lifecycle, with pending operations
-represented outside the Ruby stack and resumed from JavaScript Promises. Fiber
-or `mruby-task` integration is only necessary if it is selected as that
-suspension mechanism.
+The spike verifies a JSPI-backed C method that suspends Ruby, awaits a
+JavaScript Promise, and resumes on the same Ruby stack. This keeps binding calls
+synchronous-looking to Ruby and does not require Fiber or `mruby-task` for the
+single-request execution model. Emscripten's Wasm-native setjmp/longjmp support
+is required so suspension does not cross an intervening JavaScript exception
+wrapper.
+
+This probe is not yet a Cloudflare binding API. Binding lookup, argument and
+result encoding, rejected-Promise mapping to Ruby exceptions, and resource
+limits still need explicit adapters and tests.
 
 Streaming request/response bodies would require a further host-driven protocol
 instead of one request frame and one response frame. Any incompatible wire or

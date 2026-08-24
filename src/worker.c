@@ -13,6 +13,7 @@
 #include <task.h>
 #include <version.h>
 
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +23,8 @@
 #define PICORB_WORKER_RESPONSE_MAGIC "PRR1"
 #define PICORB_WORKER_MAX_REQUEST_FRAME_SIZE (2u * 1024u * 1024u)
 #define PICORB_WORKER_MAX_RESPONSE_FRAME_SIZE (8u * 1024u * 1024u)
+#define PICORB_WORKER_MAX_KV_KEY_SIZE 512u
+#define PICORB_WORKER_MAX_KV_VALUE_SIZE (8u * 1024u * 1024u)
 
 enum picorb_worker_status {
   PICORB_WORKER_OK = 0,
@@ -48,6 +51,111 @@ static mrb_state *worker_mrb = NULL;
 static mrb_value dispatch_proc;
 static picorb_worker_buffer response_buffer = { NULL, 0, 0 };
 static picorb_worker_buffer error_buffer = { NULL, 0, 0 };
+
+EM_ASYNC_JS(int, picorb_worker_jspi_add, (int left, int right), {
+  return await Module["picorbWorkerJspiAdd"](left, right);
+});
+
+EM_ASYNC_JS(int, picorb_worker_kv_get,
+            (const char *key_ptr, int key_len, uintptr_t value_ptr_ptr, uintptr_t value_len_ptr,
+             int max_value_len), {
+  const key = UTF8ToString(key_ptr, key_len);
+  const value = await Module["picorbWorkerKvGet"](key);
+  if (value === null) {
+    HEAPU32[value_ptr_ptr >>> 2] = 0;
+    HEAPU32[value_len_ptr >>> 2] = 0;
+    return 0;
+  }
+
+  const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+  const value_len = bytes.byteLength;
+  if (value_len > max_value_len) return -2;
+  const value_ptr = value_len > 0 ? Module._malloc(value_len) : 0;
+  if (value_len > 0 && value_ptr === 0) return -1;
+
+  if (value_len > 0) HEAPU8.set(bytes, value_ptr);
+  HEAPU32[value_ptr_ptr >>> 2] = value_ptr;
+  HEAPU32[value_len_ptr >>> 2] = value_len;
+  return 1;
+});
+
+EM_ASYNC_JS(int, picorb_worker_kv_set,
+            (const char *key_ptr, int key_len, const uint8_t *value_ptr, int value_len), {
+  const key = UTF8ToString(key_ptr, key_len);
+  const value = HEAPU8.slice(value_ptr, value_ptr + value_len);
+  await Module["picorbWorkerKvSet"](key, value);
+  return 0;
+});
+
+static mrb_value
+mrb_jspi_probe_add(mrb_state *mrb, mrb_value self)
+{
+  (void)self;
+  mrb_int left;
+  mrb_int right;
+  mrb_get_args(mrb, "ii", &left, &right);
+  return mrb_int_value(mrb, picorb_worker_jspi_add((int)left, (int)right));
+}
+
+static void
+validate_cloudflare_kv_key(mrb_state *mrb, const char *key, mrb_int key_len)
+{
+  if (key_len <= 0 || key_len > PICORB_WORKER_MAX_KV_KEY_SIZE ||
+      (key_len == 1 && key[0] == '.') ||
+      (key_len == 2 && key[0] == '.' && key[1] == '.')) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid Cloudflare KV key");
+  }
+}
+
+static mrb_value
+mrb_cloudflare_kv_get(mrb_state *mrb, mrb_value self)
+{
+  (void)self;
+  const char *key;
+  mrb_int key_len;
+  mrb_get_args(mrb, "s", &key, &key_len);
+  if (key_len > INT_MAX) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "Cloudflare KV key is too large");
+  }
+  validate_cloudflare_kv_key(mrb, key, key_len);
+
+  uintptr_t value_ptr = 0;
+  uint32_t value_len = 0;
+  int status = picorb_worker_kv_get(key, (int)key_len, (uintptr_t)&value_ptr, (uintptr_t)&value_len,
+                                    PICORB_WORKER_MAX_KV_VALUE_SIZE);
+  if (status == 0) return mrb_nil_value();
+  if (status < 0) {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "Cloudflare KV get failed");
+  }
+
+  mrb_value value = mrb_str_new(mrb, value_ptr ? (const char *)value_ptr : "", value_len);
+  free((void *)value_ptr);
+  return value;
+}
+
+static mrb_value
+mrb_cloudflare_kv_set(mrb_state *mrb, mrb_value self)
+{
+  (void)self;
+  const char *key;
+  const char *value;
+  mrb_int key_len;
+  mrb_int value_len;
+  mrb_get_args(mrb, "ss", &key, &key_len, &value, &value_len);
+  if (key_len > INT_MAX || value_len > INT_MAX) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "Cloudflare KV key or value is too large");
+  }
+  validate_cloudflare_kv_key(mrb, key, key_len);
+  if (value_len > PICORB_WORKER_MAX_KV_VALUE_SIZE) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "Cloudflare KV value is too large");
+  }
+
+  int status = picorb_worker_kv_set(key, (int)key_len, (const uint8_t *)value, (int)value_len);
+  if (status != 0) {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "Cloudflare KV set failed");
+  }
+  return mrb_nil_value();
+}
 
 static int
 buffer_reserve(picorb_worker_buffer *buffer, size_t len)
@@ -80,6 +188,15 @@ buffer_clear(picorb_worker_buffer *buffer)
 {
   buffer->len = 0;
   if (buffer->ptr) buffer->ptr[0] = '\0';
+}
+
+static void
+buffer_release(picorb_worker_buffer *buffer)
+{
+  free(buffer->ptr);
+  buffer->ptr = NULL;
+  buffer->len = 0;
+  buffer->capacity = 0;
 }
 
 static void
@@ -287,6 +404,19 @@ picorb_worker_init(const uint8_t *mrb_data, size_t mrb_len)
 }
 
 EMSCRIPTEN_KEEPALIVE
+void
+picorb_worker_close(void)
+{
+  if (worker_mrb) {
+    mrb_close(worker_mrb);
+    worker_mrb = NULL;
+  }
+  dispatch_proc = mrb_nil_value();
+  buffer_release(&response_buffer);
+  buffer_release(&error_buffer);
+}
+
+EMSCRIPTEN_KEEPALIVE
 int
 picorb_worker_dispatch_v1(const uint8_t *request_frame, size_t request_frame_len)
 {
@@ -356,6 +486,13 @@ mrb_picoruby_worker_wasm_gem_init(mrb_state *mrb)
   struct RClass *worker = mrb_define_module(mrb, "PicoRubyWorker");
   mrb_define_const(mrb, worker, "VERSION", mrb_str_new_cstr(mrb, picorb_version()));
   mrb_define_const(mrb, worker, "ABI_VERSION", mrb_fixnum_value(PICORB_WORKER_ABI_VERSION));
+
+  struct RClass *jspi_probe = mrb_define_module_under(mrb, worker, "JSPIProbe");
+  mrb_define_class_method_id(mrb, jspi_probe, MRB_SYM(add), mrb_jspi_probe_add, MRB_ARGS_REQ(2));
+
+  struct RClass *cloudflare = mrb_define_module(mrb, "Cloudflare");
+  mrb_define_module_function_id(mrb, cloudflare, MRB_SYM(kv_get), mrb_cloudflare_kv_get, MRB_ARGS_REQ(1));
+  mrb_define_module_function_id(mrb, cloudflare, MRB_SYM(kv_set), mrb_cloudflare_kv_set, MRB_ARGS_REQ(2));
 }
 
 void

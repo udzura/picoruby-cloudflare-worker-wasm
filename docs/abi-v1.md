@@ -3,6 +3,11 @@
 ABI v1 transports one fully buffered HTTP request and response per dispatch.
 Frames contain no pointers and do not rely on NUL termination.
 
+The current JavaScript host creates one Wasm instance per request, initializes
+its PicoRuby VM with `picorb_worker_init`, dispatches once, and calls
+`picorb_worker_close` in a `finally` block. JSPI may suspend the dispatch export
+without changing either frame format.
+
 ## Integer and byte encodings
 
 - `u32` is an unsigned 32-bit little-endian integer.

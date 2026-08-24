@@ -13,6 +13,7 @@ MRuby::Gem::Specification.new("picoruby-worker-wasm") do |spec|
   exported_functions = %w[
     _picorb_worker_abi_version
     _picorb_worker_init
+    _picorb_worker_close
     _picorb_worker_dispatch_v1
     _picorb_worker_response_ptr
     _picorb_worker_response_len
@@ -34,13 +35,17 @@ MRuby::Gem::Specification.new("picoruby-worker-wasm") do |spec|
         -s FILESYSTEM=0 \
         -s DYNAMIC_EXECUTION=0 \
         -s ERROR_ON_UNDEFINED_SYMBOLS=1 \
+        -s SUPPORT_LONGJMP=wasm \
+        -s WASM_LEGACY_EXCEPTIONS=0 \
+        -s JSPI=1 \
+        -s JSPI_EXPORTS='["picorb_worker_init","picorb_worker_dispatch_v1","picorb_worker_close"]' \
         -s NO_EXIT_RUNTIME=1 \
         -s ALLOW_MEMORY_GROWTH=1 \
         -s INITIAL_MEMORY=16MB \
         -s MAXIMUM_MEMORY=64MB \
         -s STACK_SIZE=1MB \
         -s INCOMING_MODULE_JS_API='["instantiateWasm","print","printErr"]' \
-        -s EXPORTED_RUNTIME_METHODS='["HEAPU8"]' \
+        -s EXPORTED_RUNTIME_METHODS='["HEAPU8","ccall"]' \
         -s EXPORTED_FUNCTIONS='#{JSON.generate(exported_functions)}' \
         --no-entry \
         --compress-debug-sections \

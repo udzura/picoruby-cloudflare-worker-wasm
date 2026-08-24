@@ -64,6 +64,10 @@ class App
       [200, { "content-type" => "text/plain; charset=utf-8" }, [lines.join("\n") + "\n"]]
     when "/debug/raise"
       raise "Dummy Rack application error"
+    when "/debug/jspi"
+      first = PicoRubyWorker::JSPIProbe.add(20, 22)
+      second = PicoRubyWorker::JSPIProbe.add(first, 8)
+      [200, { "content-type" => "text/plain; charset=utf-8" }, ["jspi_add=#{first},#{second}"]]
     else
       [404, { "content-type" => "text/plain; charset=utf-8" }, ["Not found"]]
     end

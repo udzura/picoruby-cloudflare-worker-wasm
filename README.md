@@ -1,13 +1,15 @@
 # picoruby-cloudflare-worker-wasm
 
-An external PicoRuby mrbgem that builds a small, synchronous Rack-compatible
-runtime for [Cloudflare Workers](https://workers.cloudflare.com/).
+An external PicoRuby mrbgem that builds a small Rack-compatible runtime for
+[Cloudflare Workers](https://workers.cloudflare.com/).
 
 `spike/` is a runnable, bindings-free Worker project. It builds PicoRuby as
 WebAssembly, compiles `spike/lib/app.rb` to mruby bytecode, and imports both
 artifacts from the Worker module.
 
 See [spike/README.md](spike/README.md) for setup and build instructions.
+The first Cloudflare binding is documented in
+[docs/cloudflare-kv.md](docs/cloudflare-kv.md).
 
 ## Rack application
 
@@ -34,14 +36,15 @@ contract, limits, `Rack::Lint` results, and asynchronous roadmap.
 
 ## Current scope
 
-- one PicoRuby VM per Worker isolate;
+- one PicoRuby VM per request;
 - versioned, length-prefixed binary ABI;
 - precompiled application bytecode only;
 - direct handler registration without `config.ru`;
-- asynchronous request buffering in JavaScript followed by synchronous Ruby
-  dispatch;
-- no filesystem, sockets, runtime Ruby compilation, Cloudflare bindings,
-  streaming bodies, or asynchronous Ruby execution.
+- asynchronous request buffering in JavaScript and experimental JSPI-backed
+  host calls during Ruby dispatch;
+- a fixed Cloudflare KV binding with binary-safe `get` and `set`;
+- no filesystem, sockets, runtime Ruby compilation, other Cloudflare binding
+  adapters, or streaming bodies.
 
 `mruby-task` remains linked because it is required by `picoruby-mruby`, but the
 provided Worker HAL supports neither scheduling nor Fiber-based task APIs.
@@ -58,6 +61,9 @@ MRuby::CrossBuild.new("picoruby-worker-wasm") do |conf|
   conf.cc.command = "emcc"
   conf.linker.command = "emcc"
   conf.archiver.command = "emar"
+
+  conf.cc.flags << "-sSUPPORT_LONGJMP=wasm"
+  conf.cc.flags << "-sWASM_LEGACY_EXCEPTIONS=0"
 
   conf.cc.defines << "PICORB_PLATFORM_WASM"
   conf.cc.defines << "PICORB_PLATFORM_CLOUDFLARE_WORKERS"
@@ -89,6 +95,7 @@ ABI version 1 exports:
 ```text
 picorb_worker_abi_version()
 picorb_worker_init(app_mrb_ptr, app_mrb_len)
+picorb_worker_close()
 picorb_worker_dispatch_v1(request_frame_ptr, request_frame_len)
 picorb_worker_response_ptr()
 picorb_worker_response_len()
@@ -96,11 +103,12 @@ picorb_worker_error_ptr()
 picorb_worker_error_len()
 ```
 
-`picorb_worker_init` may be called once per Worker isolate. The JavaScript glue
-checks `picorb_worker_abi_version()` before initialization. Dispatch is
-synchronous once the request frame has been buffered. A Ruby exception or an
-invalid response is reported through the error buffer and a non-zero status
-code.
+The JavaScript host creates one Emscripten module and PicoRuby VM per request,
+calls `picorb_worker_init`, dispatches once, and releases it with
+`picorb_worker_close`. It checks `picorb_worker_abi_version()` before
+initialization. Dispatch may suspend at a JSPI-backed host call. A Ruby
+exception or an invalid response is reported through the error buffer and a
+non-zero status code.
 
 The v1 request frame begins with `PRQ1`; the response frame begins with `PRR1`.
 All integers are unsigned 32-bit little-endian values and all variable data is
