@@ -1,8 +1,9 @@
 # PicoRuby Cloudflare Workers spike
 
-This is a bindings-free Cloudflare Workers feasibility project. It builds a
-PicoRuby Wasm runtime, compiles `lib/app.rb` to bytecode, and exposes the app
-through the mrbgem's Rack-compatible handler. The released
+This is a Cloudflare Workers feasibility project. It builds a PicoRuby Wasm
+runtime with Sinatra 4.2.1, compiles a `Sinatra::Base` application in
+`lib/app.rb` to bytecode, and exposes it through the mrbgem's Rack-compatible
+handler. The released
 `picoruby-worker-wasm` is resolved from GitHub at the tag recorded in the build
 configuration.
 
@@ -25,14 +26,34 @@ npm run build
 `npm run build` performs all build-time work:
 
 1. invokes PicoRuby's Rakefile with `build_config/picoruby-worker-wasm.rb`;
-2. clones `udzura/picoruby-cloudflare-worker-wasm` as the mrbgem dependency;
-3. generates `dist/picoruby-worker.js` and `dist/picoruby-worker.wasm`;
-4. compiles `lib/app.rb` with the matching host `mrbc` into `dist/app.bin`.
+2. checks out Mustermann, Rack, and Sinatra compatibility mrbgems from their
+   `master` branches on GitHub;
+3. copies `mruby-regexp` and `mruby-compiler` to `spike/tmp/`, then applies
+   the Mustermann-required splat fix and the temporary mruby #7390 compiler
+   fix without modifying the PicoRuby checkout;
+4. clones `udzura/picoruby-cloudflare-worker-wasm` as the Worker mrbgem;
+5. generates `dist/picoruby-worker.js` and `dist/picoruby-worker.wasm`;
+6. compiles `lib/app.rb` with that same patched host `mrbc` into `dist/app.bin`.
+
+The compiler patch is intentionally build-local while mruby #7390 is awaiting
+upstream merge and the regular `mruby-compiler2` mirror sync. Remove
+`patches/mruby-compiler-7390.patch` and its staging step once the pinned
+compiler revision includes the fix.
 
 When developing unreleased changes in the parent mrbgem, bypass the GitHub pin:
 
 ```console
 PICORUBY_WORKER_WASM_GEM_DIR=.. npm run build
+```
+
+When developing an unreleased change, each GitHub dependency can be overridden
+with a local checkout:
+
+```console
+MRUBY_MUSTERMANN_GEM_DIR=/path/to/mruby-mustermann \
+MRUBY_RACK_GEM_DIR=/path/to/mruby-rack \
+PICORUBY_SINATRA_COVERS_GEM_DIR=/path/to/picoruby-sinatra-covers \
+npm run build
 ```
 
 After changing only the selected app, rebuild just the bytecode:
@@ -68,11 +89,12 @@ source file. Each saved change runs the equivalent of `npm run build:app`;
 Wrangler then observes the updated `dist/app.bin` and reloads the local Worker.
 To run only the Ruby bytecode watcher, use `npm run watch:app`.
 
-The example registers `App` with
+The example defines `App < Sinatra::Base` and registers it with
 `Rackup::Handler::CloudflareWorker.run(App)` and exposes:
 
 - `GET /ruby_version`
 - `GET /factorial`
+- `GET /sinatra/:name`, which exercises Sinatra 4.2.1 and Mustermann params
 - any method at `/hello`
 - `POST /echo?name=pico`, which returns the binary request body
 - any method at `/debug/request`, which dumps the Rack request state
@@ -118,9 +140,9 @@ a later binding cannot silently replace an existing host operation. HTTP body
 limits remain `dispatch` request options and are not binding callbacks.
 
 `npm test` loads the generated Wasm in Node and checks the ABI version, expected
-Emscripten imports, Rack routing/env behavior, binary bodies, repeated cookies,
-HEAD, 404, the request body size limit, per-request VM creation, and JSPI
-suspension/resumption.
+Emscripten imports, Sinatra/Mustermann routing, Rack env behavior, binary
+bodies, repeated cookies, HEAD, Sinatra 404/500 handling, the request body size
+limit, per-request VM creation, and JSPI suspension/resumption.
 
 The Worker creates a fresh PicoRuby VM for each request. JavaScript buffers each
 Request asynchronously, then Ruby dispatch and response generation are
@@ -128,6 +150,11 @@ synchronous except for JSPI-backed host calls.
 `/debug/jspi` is only a feasibility probe; production Cloudflare binding
 adapters other than KV and rejection-to-Ruby-exception mapping remain outside
 this spike.
+
+The current `picoruby-sinatra-covers` scope intentionally disables sessions,
+rack-protection, logging middleware, static files, templates, and development
+reloading. This spike verifies Sinatra routing and response generation on the
+buffered Worker Rack protocol; it is not yet a full Sinatra deployment profile.
 
 The release tag is paired with its commit SHA so an existing PicoRuby build
 cache is also checked out to the expected source. For local experiments,

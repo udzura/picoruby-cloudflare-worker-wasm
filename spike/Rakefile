@@ -1,5 +1,6 @@
 require "fileutils"
 require "open3"
+require "digest"
 
 SPIKE_ROOT = File.expand_path(__dir__)
 PICORUBY_ROOT = ENV.fetch("PICORUBY_ROOT") do
@@ -30,7 +31,67 @@ end
 def build_runtime!
   verify_emscripten!
   refresh_worker_wasm_checkout!
-  sh({ "CONFIG" => BUILD_CONFIG }, "rake", "-f", PICORUBY_RAKEFILE)
+  regexp_dir = prepare_mruby_regexp!
+  compiler_dir = prepare_mruby_compiler!
+  environment = {
+    "CONFIG" => BUILD_CONFIG,
+    "MRUBY_REGEXP_DIR" => regexp_dir,
+    "MRUBY_COMPILER_GEM_DIR" => compiler_dir,
+  }
+  sh environment, "rake", "-f", PICORUBY_RAKEFILE
+end
+
+def prepare_mruby_compiler!
+  source = File.join(PICORUBY_ROOT, "mrbgems", "mruby-compiler")
+  destination = File.join(SPIKE_ROOT, "tmp", "mruby-compiler")
+  patch = File.join(SPIKE_ROOT, "patches", "mruby-compiler-7390.patch")
+  stamp = File.join(destination, ".spike-source")
+
+  abort "mruby-compiler was not found: #{source}" unless File.file?(File.join(source, "mrbgem.rake"))
+  abort "mruby-compiler patch was not found: #{patch}" unless File.file?(patch)
+
+  fingerprint = Digest::SHA256.hexdigest([
+    Digest::SHA256.file(File.join(source, "src", "codegen.c")).hexdigest,
+    Digest::SHA256.file(patch).hexdigest,
+  ].join(":"))
+  return destination if File.file?(stamp) && File.read(stamp) == fingerprint
+
+  FileUtils.rm_rf(destination)
+  FileUtils.mkdir_p(File.dirname(destination))
+  FileUtils.cp_r(source, destination)
+  sh "patch", "--batch", "--forward", "-d", destination, "-p1", "-i", patch
+  File.write(stamp, fingerprint)
+  destination
+end
+
+def prepare_mruby_regexp!
+  source = File.join(
+    PICORUBY_ROOT,
+    "mrbgems",
+    "picoruby-mruby",
+    "lib",
+    "mruby",
+    "mrbgems",
+    "mruby-regexp",
+  )
+  destination = File.join(SPIKE_ROOT, "tmp", "mruby-regexp")
+  patch = File.join(SPIKE_ROOT, "patches", "mruby-regexp-7257.patch")
+  stamp = File.join(destination, ".spike-source")
+
+  abort "mruby-regexp was not found: #{source}" unless File.directory?(source)
+  abort "mruby-regexp patch was not found: #{patch}" unless File.file?(patch)
+  fingerprint = Digest::SHA256.hexdigest([
+    Digest::SHA256.file(File.join(source, "src", "re_exec.c")).hexdigest,
+    Digest::SHA256.file(patch).hexdigest,
+  ].join(":"))
+  return destination if File.file?(stamp) && File.read(stamp) == fingerprint
+
+  FileUtils.rm_rf(destination)
+  FileUtils.mkdir_p(File.dirname(destination))
+  FileUtils.cp_r(source, destination)
+  sh "patch", "--batch", "--forward", "-d", destination, "-p1", "-i", patch
+  File.write(stamp, fingerprint)
+  destination
 end
 
 def refresh_worker_wasm_checkout!

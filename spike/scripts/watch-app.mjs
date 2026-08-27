@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { watch } from "node:fs";
+import { unwatchFile, watch, watchFile } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, relative, resolve } from "node:path";
 
@@ -15,6 +15,8 @@ let building = false;
 let stopping = false;
 let timer;
 let worker;
+let watcher;
+let polling = false;
 
 function run(command, args, options = {}) {
   return new Promise((resolvePromise, reject) => {
@@ -73,17 +75,39 @@ function startWrangler() {
   });
 }
 
+function startPollingWatcher(error) {
+  if (polling) return;
+
+  if (watcher) watcher.close();
+  watcher = undefined;
+  polling = true;
+  console.warn(`[picoruby] fs.watch unavailable (${error.code || error.message}); using polling`);
+  watchFile(appSource, { interval: 250 }, (current, previous) => {
+    if (current.mtimeMs !== previous.mtimeMs) scheduleBuild();
+  });
+}
+
+function startAppWatcher() {
+  try {
+    watcher = watch(appDirectory, { recursive: false }, (_event, filename) => {
+      if (filename && filename.toString() === appFilename) scheduleBuild();
+    });
+    watcher.on("error", startPollingWatcher);
+  } catch (error) {
+    startPollingWatcher(error);
+  }
+}
+
 function stop(signal) {
   if (stopping) return;
   stopping = true;
-  watcher.close();
+  if (watcher) watcher.close();
+  if (polling) unwatchFile(appSource);
   if (worker) worker.kill(signal);
 }
 
 if (!(await buildApp())) process.exit(1);
-const watcher = watch(appDirectory, { recursive: false }, (_event, filename) => {
-  if (filename && filename.toString() === appFilename) scheduleBuild();
-});
+startAppWatcher();
 
 process.on("SIGINT", () => stop("SIGINT"));
 process.on("SIGTERM", () => stop("SIGTERM"));

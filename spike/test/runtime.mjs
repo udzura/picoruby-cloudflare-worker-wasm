@@ -59,6 +59,16 @@ const factorialResponse = await dispatch(
 );
 assert.equal(await factorialResponse.text(), "factorial(6) = 720");
 
+const sinatraResponse = await dispatch(
+  runtime,
+  new Request("https://example.com/sinatra/codex"),
+);
+assert.equal(sinatraResponse.status, 200);
+assert.equal(
+  await sinatraResponse.text(),
+  "Hello, codex from Sinatra 4.2.1 on PicoRuby",
+);
+
 const requestBody = new Uint8Array([0, 1, 2, 255]);
 const echoResponse = await dispatch(
   runtime,
@@ -108,9 +118,14 @@ assert.match(debugBody, /HTTP_X_DEBUG_HEADER="visible"/);
 assert.match(debugBody, /rack\.input\.bytesize=10/);
 assert.match(debugBody, /rack\.input="debug body"/);
 
-await assert.rejects(
-  dispatch(runtime, new Request("https://example.com/debug/raise")),
-  /PicoRuby dispatch failed: #<RuntimeError: Dummy Rack application error>/,
+const errorResponse = await dispatch(
+  runtime,
+  new Request("https://example.com/debug/raise"),
+);
+assert.equal(errorResponse.status, 500);
+assert.equal(
+  await errorResponse.text(),
+  "handled by Sinatra error handler: RuntimeError",
 );
 
 const recoveredResponse = await dispatch(
@@ -128,7 +143,7 @@ const missingResponse = await dispatch(
   new Request("https://example.com/missing"),
 );
 assert.equal(missingResponse.status, 404);
-assert.equal(await missingResponse.text(), "Not found");
+assert.equal(await missingResponse.text(), "<h1>Not Found</h1>");
 
 const jspiResponse = await dispatch(
   runtime,
