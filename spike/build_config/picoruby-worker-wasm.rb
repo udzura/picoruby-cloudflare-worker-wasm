@@ -67,9 +67,17 @@ MRuby::CrossBuild.new("picoruby-worker-wasm") do |conf|
   end
 
   conf.gem gemdir: File.expand_path(ENV.fetch("MRUBY_REGEXP_DIR"))
-  conf.gem gemdir: File.expand_path(ENV.fetch("MRUBY_MUSTERMANN_GEM_DIR"))
-  conf.gem gemdir: File.expand_path(ENV.fetch("MRUBY_RACK_GEM_DIR"))
-  conf.gem gemdir: File.expand_path(ENV.fetch("PICORUBY_SINATRA_COVERS_GEM_DIR"))
+  {
+    "MRUBY_MUSTERMANN_GEM_DIR" => "udzura/mruby-mustermann",
+    "MRUBY_RACK_GEM_DIR" => "udzura/mruby-rack",
+    "PICORUBY_SINATRA_COVERS_GEM_DIR" => "udzura/picoruby-sinatra-covers",
+  }.each do |environment, repository|
+    if (gem_dir = ENV[environment])
+      conf.gem gemdir: File.expand_path(gem_dir)
+    else
+      conf.gem github: repository, branch: "master"
+    end
+  end
 
   if (gem_dir = ENV["PICORUBY_WORKER_WASM_GEM_DIR"])
     conf.gem gemdir: File.expand_path(gem_dir)

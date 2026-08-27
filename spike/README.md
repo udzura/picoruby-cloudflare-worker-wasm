@@ -10,8 +10,6 @@ configuration.
 ## Prerequisites
 
 - A PicoRuby source checkout compatible with this gem
-- Local sibling checkouts of `mruby-mustermann`, `mruby-rack`, and
-  `picoruby-sinatra-covers` (including its Sinatra submodule)
 - Emscripten 5.0.7 (`spike/.emscripten-version` is checked before a build)
 - Node.js and npm
 
@@ -28,8 +26,8 @@ npm run build
 `npm run build` performs all build-time work:
 
 1. invokes PicoRuby's Rakefile with `build_config/picoruby-worker-wasm.rb`;
-2. loads Mustermann, Rack, and Sinatra compatibility mrbgems from their local
-   sibling checkouts;
+2. checks out Mustermann, Rack, and Sinatra compatibility mrbgems from their
+   `master` branches on GitHub;
 3. copies `mruby-regexp` and `mruby-compiler` to `spike/tmp/`, then applies
    the Mustermann-required splat fix and the temporary mruby #7390 compiler
    fix without modifying the PicoRuby checkout;
@@ -48,7 +46,8 @@ When developing unreleased changes in the parent mrbgem, bypass the GitHub pin:
 PICORUBY_WORKER_WASM_GEM_DIR=.. npm run build
 ```
 
-The sibling defaults can be overridden when the repositories live elsewhere:
+When developing an unreleased change, each GitHub dependency can be overridden
+with a local checkout:
 
 ```console
 MRUBY_MUSTERMANN_GEM_DIR=/path/to/mruby-mustermann \
