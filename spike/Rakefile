@@ -1,5 +1,6 @@
 require "fileutils"
 require "open3"
+require "digest"
 
 SPIKE_ROOT = File.expand_path(__dir__)
 PICORUBY_ROOT = ENV.fetch("PICORUBY_ROOT") do
@@ -11,6 +12,18 @@ DIST_DIR = File.join(SPIKE_ROOT, "dist")
 APP_SOURCE = File.expand_path(ENV.fetch("PICORUBY_APP", "lib/app.rb"), SPIKE_ROOT)
 KV_TEST_APP_SOURCE = File.join(SPIKE_ROOT, "test", "kv_app.rb")
 WORKER_WASM_REVISION = ENV.fetch("PICORUBY_WORKER_WASM_REV", "03ed78cf243bd05039e657cafe809681be5679da")
+MRUBY_MUSTERMANN_GEM_DIR = File.expand_path(
+  ENV.fetch("MRUBY_MUSTERMANN_GEM_DIR", "../../mruby-mustermann"),
+  SPIKE_ROOT,
+)
+MRUBY_RACK_GEM_DIR = File.expand_path(
+  ENV.fetch("MRUBY_RACK_GEM_DIR", "../../mruby-rack"),
+  SPIKE_ROOT,
+)
+PICORUBY_SINATRA_COVERS_GEM_DIR = File.expand_path(
+  ENV.fetch("PICORUBY_SINATRA_COVERS_GEM_DIR", "../../picoruby-sinatra-covers"),
+  SPIKE_ROOT,
+)
 
 abort "PicoRuby Rakefile was not found: #{PICORUBY_RAKEFILE}" unless File.file?(PICORUBY_RAKEFILE)
 
@@ -30,7 +43,91 @@ end
 def build_runtime!
   verify_emscripten!
   refresh_worker_wasm_checkout!
-  sh({ "CONFIG" => BUILD_CONFIG }, "rake", "-f", PICORUBY_RAKEFILE)
+  verify_sinatra_dependencies!
+  regexp_dir = prepare_mruby_regexp!
+  compiler_dir = prepare_mruby_compiler!
+  environment = {
+    "CONFIG" => BUILD_CONFIG,
+    "MRUBY_REGEXP_DIR" => regexp_dir,
+    "MRUBY_COMPILER_GEM_DIR" => compiler_dir,
+    "MRUBY_MUSTERMANN_GEM_DIR" => MRUBY_MUSTERMANN_GEM_DIR,
+    "MRUBY_RACK_GEM_DIR" => MRUBY_RACK_GEM_DIR,
+    "PICORUBY_SINATRA_COVERS_GEM_DIR" => PICORUBY_SINATRA_COVERS_GEM_DIR,
+  }
+  sh environment, "rake", "-f", PICORUBY_RAKEFILE
+end
+
+def prepare_mruby_compiler!
+  source = File.join(PICORUBY_ROOT, "mrbgems", "mruby-compiler")
+  destination = File.join(SPIKE_ROOT, "tmp", "mruby-compiler")
+  patch = File.join(SPIKE_ROOT, "patches", "mruby-compiler-7390.patch")
+  stamp = File.join(destination, ".spike-source")
+
+  abort "mruby-compiler was not found: #{source}" unless File.file?(File.join(source, "mrbgem.rake"))
+  abort "mruby-compiler patch was not found: #{patch}" unless File.file?(patch)
+
+  fingerprint = Digest::SHA256.hexdigest([
+    Digest::SHA256.file(File.join(source, "src", "codegen.c")).hexdigest,
+    Digest::SHA256.file(patch).hexdigest,
+  ].join(":"))
+  return destination if File.file?(stamp) && File.read(stamp) == fingerprint
+
+  FileUtils.rm_rf(destination)
+  FileUtils.mkdir_p(File.dirname(destination))
+  FileUtils.cp_r(source, destination)
+  sh "patch", "--batch", "--forward", "-d", destination, "-p1", "-i", patch
+  File.write(stamp, fingerprint)
+  destination
+end
+
+def verify_sinatra_dependencies!
+  {
+    "mruby-mustermann" => MRUBY_MUSTERMANN_GEM_DIR,
+    "mruby-rack" => MRUBY_RACK_GEM_DIR,
+    "picoruby-sinatra-covers" => PICORUBY_SINATRA_COVERS_GEM_DIR,
+  }.each do |name, path|
+    abort "#{name} was not found: #{path}" unless File.file?(File.join(path, "mrbgem.rake"))
+  end
+
+  sinatra_base = File.join(
+    PICORUBY_SINATRA_COVERS_GEM_DIR,
+    "vendor",
+    "sinatra",
+    "lib",
+    "sinatra",
+    "base.rb",
+  )
+  return if File.file?(sinatra_base)
+
+  abort "Sinatra sources were not found. Initialize the picoruby-sinatra-covers submodule."
+end
+
+def prepare_mruby_regexp!
+  source = File.join(
+    PICORUBY_ROOT,
+    "mrbgems",
+    "picoruby-mruby",
+    "lib",
+    "mruby",
+    "mrbgems",
+    "mruby-regexp",
+  )
+  destination = File.join(SPIKE_ROOT, "tmp", "mruby-regexp")
+  patch = File.join(MRUBY_MUSTERMANN_GEM_DIR, "patches", "mruby-regexp-7257.patch")
+  stamp = File.join(destination, ".patched-7257")
+
+  abort "mruby-regexp was not found: #{source}" unless File.directory?(source)
+  abort "mruby-regexp patch was not found: #{patch}" unless File.file?(patch)
+  if File.file?(stamp) && File.mtime(stamp) >= File.mtime(patch)
+    return destination
+  end
+
+  FileUtils.rm_rf(destination)
+  FileUtils.mkdir_p(File.dirname(destination))
+  FileUtils.cp_r(source, destination)
+  sh "patch", "-d", destination, "-p1", "-i", patch
+  FileUtils.touch(stamp)
+  destination
 end
 
 def refresh_worker_wasm_checkout!
