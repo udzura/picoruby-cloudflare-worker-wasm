@@ -48,7 +48,7 @@ MRuby::CrossBuild.new("picoruby-worker-wasm") do |conf|
     conf.gem gemdir: File.join(mruby_gems, name)
   end
 
-  conf.gem gemdir: File.expand_path(ENV.fetch("MRUBY_REGEXP_DIR"))
+  conf.gem gemdir: File.join(mruby_gems, "mruby-regexp")
   {
     "MRUBY_MUSTERMANN_GEM_DIR" => "udzura/mruby-mustermann",
     "MRUBY_RACK_GEM_DIR" => "udzura/mruby-rack",
@@ -64,8 +64,8 @@ MRuby::CrossBuild.new("picoruby-worker-wasm") do |conf|
   if (gem_dir = ENV["PICORUBY_WORKER_WASM_GEM_DIR"])
     conf.gem gemdir: File.expand_path(gem_dir)
   else
-    gem_ref = ENV.fetch("PICORUBY_WORKER_WASM_REF", "0.2.0")
-    gem_revision = ENV.fetch("PICORUBY_WORKER_WASM_REV", "4f64b94f5192f3d8fb84e513c43000b03fd29bd1")
+    gem_ref = ENV.fetch("PICORUBY_WORKER_WASM_REF", "0.2.1")
+    gem_revision = ENV.fetch("PICORUBY_WORKER_WASM_REV", "aebf5de0547d126a991a0363fee142c4ebeab78e")
     conf.gem github: "udzura/picoruby-cloudflare-worker-wasm",
              branch: gem_ref,
              checksum_hash: gem_revision

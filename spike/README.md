@@ -28,8 +28,7 @@ npm run build
 1. invokes PicoRuby's Rakefile with `build_config/picoruby-worker-wasm.rb`;
 2. checks out Mustermann, Rack, and Sinatra compatibility mrbgems from their
    `master` branches on GitHub;
-3. copies `mruby-regexp` to `spike/tmp/`, then applies the Mustermann-required
-   splat fix without modifying the PicoRuby checkout;
+3. uses the `mruby-regexp` bundled with PicoRuby;
 4. clones `udzura/picoruby-cloudflare-worker-wasm` as the Worker mrbgem;
 5. generates `dist/picoruby-worker.js` and `dist/picoruby-worker.wasm`;
 6. compiles `lib/app.rb` with PicoRuby's host `mrbc` into `dist/app.bin`.

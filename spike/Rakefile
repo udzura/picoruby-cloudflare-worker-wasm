@@ -1,6 +1,5 @@
 require "fileutils"
 require "open3"
-require "digest"
 
 SPIKE_ROOT = File.expand_path(__dir__)
 PICORUBY_ROOT = ENV.fetch("PICORUBY_ROOT") do
@@ -11,7 +10,7 @@ BUILD_CONFIG = File.join(SPIKE_ROOT, "build_config", "picoruby-worker-wasm.rb")
 DIST_DIR = File.join(SPIKE_ROOT, "dist")
 APP_SOURCE = File.expand_path(ENV.fetch("PICORUBY_APP", "lib/app.rb"), SPIKE_ROOT)
 KV_TEST_APP_SOURCE = File.join(SPIKE_ROOT, "test", "kv_app.rb")
-WORKER_WASM_REVISION = ENV.fetch("PICORUBY_WORKER_WASM_REV", "4f64b94f5192f3d8fb84e513c43000b03fd29bd1")
+WORKER_WASM_REVISION = ENV.fetch("PICORUBY_WORKER_WASM_REV", "aebf5de0547d126a991a0363fee142c4ebeab78e")
 
 abort "PicoRuby Rakefile was not found: #{PICORUBY_RAKEFILE}" unless File.file?(PICORUBY_RAKEFILE)
 
@@ -31,42 +30,7 @@ end
 def build_runtime!
   verify_emscripten!
   refresh_worker_wasm_checkout!
-  regexp_dir = prepare_mruby_regexp!
-  environment = {
-    "CONFIG" => BUILD_CONFIG,
-    "MRUBY_REGEXP_DIR" => regexp_dir,
-  }
-  sh environment, "rake", "-f", PICORUBY_RAKEFILE
-end
-
-def prepare_mruby_regexp!
-  source = File.join(
-    PICORUBY_ROOT,
-    "mrbgems",
-    "picoruby-mruby",
-    "lib",
-    "mruby",
-    "mrbgems",
-    "mruby-regexp",
-  )
-  destination = File.join(SPIKE_ROOT, "tmp", "mruby-regexp")
-  patch = File.join(SPIKE_ROOT, "patches", "mruby-regexp-7257.patch")
-  stamp = File.join(destination, ".spike-source")
-
-  abort "mruby-regexp was not found: #{source}" unless File.directory?(source)
-  abort "mruby-regexp patch was not found: #{patch}" unless File.file?(patch)
-  fingerprint = Digest::SHA256.hexdigest([
-    Digest::SHA256.file(File.join(source, "src", "re_exec.c")).hexdigest,
-    Digest::SHA256.file(patch).hexdigest,
-  ].join(":"))
-  return destination if File.file?(stamp) && File.read(stamp) == fingerprint
-
-  FileUtils.rm_rf(destination)
-  FileUtils.mkdir_p(File.dirname(destination))
-  FileUtils.cp_r(source, destination)
-  sh "patch", "--batch", "--forward", "-d", destination, "-p1", "-i", patch
-  File.write(stamp, fingerprint)
-  destination
+  sh({ "CONFIG" => BUILD_CONFIG }, "rake", "-f", PICORUBY_RAKEFILE)
 end
 
 def refresh_worker_wasm_checkout!
