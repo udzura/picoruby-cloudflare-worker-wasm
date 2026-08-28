@@ -28,17 +28,11 @@ npm run build
 1. invokes PicoRuby's Rakefile with `build_config/picoruby-worker-wasm.rb`;
 2. checks out Mustermann, Rack, and Sinatra compatibility mrbgems from their
    `master` branches on GitHub;
-3. copies `mruby-regexp` and `mruby-compiler` to `spike/tmp/`, then applies
-   the Mustermann-required splat fix and the temporary mruby #7390 compiler
-   fix without modifying the PicoRuby checkout;
+3. copies `mruby-regexp` to `spike/tmp/`, then applies the Mustermann-required
+   splat fix without modifying the PicoRuby checkout;
 4. clones `udzura/picoruby-cloudflare-worker-wasm` as the Worker mrbgem;
 5. generates `dist/picoruby-worker.js` and `dist/picoruby-worker.wasm`;
-6. compiles `lib/app.rb` with that same patched host `mrbc` into `dist/app.bin`.
-
-The compiler patch is intentionally build-local while mruby #7390 is awaiting
-upstream merge and the regular `mruby-compiler2` mirror sync. Remove
-`patches/mruby-compiler-7390.patch` and its staging step once the pinned
-compiler revision includes the fix.
+6. compiles `lib/app.rb` with PicoRuby's host `mrbc` into `dist/app.bin`.
 
 When developing unreleased changes in the parent mrbgem, bypass the GitHub pin:
 
