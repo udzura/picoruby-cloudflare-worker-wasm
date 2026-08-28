@@ -32,36 +32,11 @@ def build_runtime!
   verify_emscripten!
   refresh_worker_wasm_checkout!
   regexp_dir = prepare_mruby_regexp!
-  compiler_dir = prepare_mruby_compiler!
   environment = {
     "CONFIG" => BUILD_CONFIG,
     "MRUBY_REGEXP_DIR" => regexp_dir,
-    "MRUBY_COMPILER_GEM_DIR" => compiler_dir,
   }
   sh environment, "rake", "-f", PICORUBY_RAKEFILE
-end
-
-def prepare_mruby_compiler!
-  source = File.join(PICORUBY_ROOT, "mrbgems", "mruby-compiler")
-  destination = File.join(SPIKE_ROOT, "tmp", "mruby-compiler")
-  patch = File.join(SPIKE_ROOT, "patches", "mruby-compiler-7390.patch")
-  stamp = File.join(destination, ".spike-source")
-
-  abort "mruby-compiler was not found: #{source}" unless File.file?(File.join(source, "mrbgem.rake"))
-  abort "mruby-compiler patch was not found: #{patch}" unless File.file?(patch)
-
-  fingerprint = Digest::SHA256.hexdigest([
-    Digest::SHA256.file(File.join(source, "src", "codegen.c")).hexdigest,
-    Digest::SHA256.file(patch).hexdigest,
-  ].join(":"))
-  return destination if File.file?(stamp) && File.read(stamp) == fingerprint
-
-  FileUtils.rm_rf(destination)
-  FileUtils.mkdir_p(File.dirname(destination))
-  FileUtils.cp_r(source, destination)
-  sh "patch", "--batch", "--forward", "-d", destination, "-p1", "-i", patch
-  File.write(stamp, fingerprint)
-  destination
 end
 
 def prepare_mruby_regexp!

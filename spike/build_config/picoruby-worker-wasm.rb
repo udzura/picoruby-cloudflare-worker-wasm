@@ -1,18 +1,3 @@
-# The PicoRuby source tree is supplied by PICORUBY_ROOT when this configuration
-# is invoked from spike/Rakefile.
-#
-# PicoRuby's build helper normally resolves this gem from its own mrbgems
-# directory. Override that resolution for this process only, so spike can use
-# a patched copy without changing the checkout or adding a duplicate gem.
-class MRuby::Build
-  def build_mrbc_exec
-    gem gemdir: File.expand_path(ENV.fetch("MRUBY_COMPILER_GEM_DIR")) unless @gems["mruby-compiler"]
-    gem core: "mruby-bin-mrbc" unless @gems["mruby-bin-mrbc"]
-    self.mrbcfile = "#{build_dir}/bin/mrbc"
-    set_build_info
-  end
-end
-
 MRuby::CrossBuild.new("picoruby-worker-wasm") do |conf|
   conf.toolchain :clang
 
@@ -40,9 +25,6 @@ MRuby::CrossBuild.new("picoruby-worker-wasm") do |conf|
   # Select the single-threaded HAL carried by picoruby-worker-wasm.
   conf.ports :worker_wasm
 
-  # The target runtime also links mruby-compiler through
-  # picoruby-worker-wasm's dependency. Register the same staged gem here.
-  conf.gem gemdir: File.expand_path(ENV.fetch("MRUBY_COMPILER_GEM_DIR"))
   conf.picoruby(alloc_estalloc: false)
 
   mruby_gems = File.join(MRUBY_ROOT, "mrbgems", "picoruby-mruby", "lib", "mruby", "mrbgems")
