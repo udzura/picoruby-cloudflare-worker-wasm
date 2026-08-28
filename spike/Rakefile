@@ -10,7 +10,7 @@ BUILD_CONFIG = File.join(SPIKE_ROOT, "build_config", "picoruby-worker-wasm.rb")
 DIST_DIR = File.join(SPIKE_ROOT, "dist")
 APP_SOURCE = File.expand_path(ENV.fetch("PICORUBY_APP", "lib/app.rb"), SPIKE_ROOT)
 KV_TEST_APP_SOURCE = File.join(SPIKE_ROOT, "test", "kv_app.rb")
-WORKER_WASM_REVISION = ENV.fetch("PICORUBY_WORKER_WASM_REV", "aebf5de0547d126a991a0363fee142c4ebeab78e")
+WORKER_WASM_REVISION = ENV.fetch("PICORUBY_WORKER_WASM_REV", "939022a7d2c77acb3b2d456c8ebbcb54a17a9aca")
 
 abort "PicoRuby Rakefile was not found: #{PICORUBY_RAKEFILE}" unless File.file?(PICORUBY_RAKEFILE)
 
