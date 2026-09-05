@@ -401,10 +401,11 @@ mrb_cloudflare_env_get(mrb_state *mrb, mrb_value self)
 }
 
 static mrb_value
-mrb_cloudflare_env_key_p(mrb_state *mrb, mrb_value self)
+mrb_cloudflare_warn_env_mutation(mrb_state *mrb, mrb_value self)
 {
-  mrb_value value = mrb_cloudflare_env_get(mrb, self);
-  return mrb_bool_value(!mrb_nil_p(value));
+  (void)self;
+  mrb_warn(mrb, "ENV changes are request-local and do not update Cloudflare bindings");
+  return mrb_nil_value();
 }
 
 static mrb_value
@@ -788,13 +789,10 @@ mrb_picoruby_worker_wasm_gem_init(mrb_state *mrb)
   mrb_define_module_function(mrb, cloudflare, "__kv_put", mrb_cloudflare_kv_set, MRB_ARGS_REQ(4));
   mrb_define_module_function(mrb, cloudflare, "__queue_send", mrb_cloudflare_queue_send, MRB_ARGS_REQ(2));
   mrb_define_module_function(mrb, cloudflare, "__env_get", mrb_cloudflare_env_get, MRB_ARGS_REQ(1));
+  mrb_define_module_function(mrb, cloudflare, "__warn_env_mutation", mrb_cloudflare_warn_env_mutation,
+                             MRB_ARGS_NONE());
   mrb_define_module_function(mrb, cloudflare, "__env_binding_type", mrb_cloudflare_env_binding_type,
                              MRB_ARGS_REQ(1));
-
-  mrb_value env = mrb_const_get(mrb, mrb_obj_value(mrb->object_class), MRB_SYM(ENV));
-  struct RObject *env_object = mrb_obj_ptr(env);
-  mrb_define_singleton_method_id(mrb, env_object, MRB_OPSYM(aref), mrb_cloudflare_env_get, MRB_ARGS_REQ(1));
-  mrb_define_singleton_method_id(mrb, env_object, MRB_SYM_Q(key), mrb_cloudflare_env_key_p, MRB_ARGS_REQ(1));
 }
 
 void

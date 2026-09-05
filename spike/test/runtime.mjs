@@ -395,17 +395,25 @@ const runtimeWorkerEnv = {
   },
 };
 runtimeWorkerEnv.PICORUBY_KV = runtimeWorkerEnv.SECOND_KV;
-const bindingsRuntime = await createRuntime(
-  createPicoRuby,
-  wasmModule,
-  bindingsAppBytecode,
-  createCloudflareBindings(runtimeWorkerEnv, {
-    KV_BINDING: "kv",
-    PICORUBY_KV: "kv",
-    QUEUE_FOO: "queue",
-    SECOND_KV: "kv",
-  }),
-);
+const runtimeWarnings = [];
+const originalConsoleError = console.error;
+console.error = (...parts) => runtimeWarnings.push(parts.join(" "));
+let bindingsRuntime;
+try {
+  bindingsRuntime = await createRuntime(
+    createPicoRuby,
+    wasmModule,
+    bindingsAppBytecode,
+    createCloudflareBindings(runtimeWorkerEnv, {
+      KV_BINDING: "kv",
+      PICORUBY_KV: "kv",
+      QUEUE_FOO: "queue",
+      SECOND_KV: "kv",
+    }),
+  );
+} finally {
+  console.error = originalConsoleError;
+}
 
 const environmentResponse = await dispatch(
   bindingsRuntime,
@@ -415,6 +423,26 @@ assert.equal(
   await environmentResponse.text(),
   'worker-value|{"retries":3}|secret-value|present|missing',
 );
+
+const environmentOverlayResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/env/overlay"),
+);
+assert.equal(
+  await environmentOverlayResponse.text(),
+  '["worker-value", ["overridden", "overridden", true], "overridden", [nil, "default", false], ["one", false], [nil, "two", nil], false, false, "#<ENV (Cloudflare request overlay)>"]',
+);
+assert.equal(runtimeWarnings.length, 4);
+for (const warning of runtimeWarnings) {
+  assert.match(warning, /ENV changes are request-local and do not update Cloudflare bindings/);
+  assert.doesNotMatch(warning, /secret-value|overridden|worker-value/);
+}
+
+const environmentOverlayResetResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/env/overlay/reset"),
+);
+assert.equal(await environmentOverlayResetResponse.text(), '["worker-value", "secret-value"]');
 
 const cloudflareEnvironmentResponse = await dispatch(
   bindingsRuntime,

@@ -241,6 +241,7 @@ module PicoRubyWorker
     end
 
     def self.build_env(request)
+      ENV.__cloudflare_reset
       fields = request[0]
       headers = request[1]
       body = request[2]
@@ -570,6 +571,146 @@ module Cloudflare
     end
   end
 
+  class EnvironmentVariables
+    def initialize
+      __cloudflare_reset
+    end
+
+    def __cloudflare_reset
+      @overlay = {}
+      @deleted = {}
+      @cleared = false
+      self
+    end
+
+    def [](key)
+      __cloudflare_validate_key(key)
+      return @overlay[key] if @overlay.key?(key)
+      return nil if @cleared || @deleted.key?(key)
+
+      Cloudflare.__env_get(key)
+    end
+
+    def []=(key, value)
+      __cloudflare_validate_key(key)
+      __cloudflare_validate_value(value)
+      __cloudflare_warn_mutation
+      __cloudflare_set(key, value)
+      value
+    end
+
+    alias store []=
+
+    def key?(key)
+      !self[key].nil?
+    end
+
+    alias has_key? key?
+    alias include? key?
+    alias member? key?
+
+    def fetch(key, *defaults, &block)
+      raise ArgumentError, "wrong number of arguments" if defaults.size > 1
+
+      value = self[key]
+      return value unless value.nil?
+      return block.call(key) if block
+      return defaults[0] if defaults.size == 1
+
+      raise KeyError, "key not found: #{key}"
+    end
+
+    def delete(key, &block)
+      __cloudflare_validate_key(key)
+      value = self[key]
+      __cloudflare_warn_mutation
+      @overlay.delete(key)
+      @deleted[key] = true
+      return value unless value.nil?
+
+      block ? block.call(key) : nil
+    end
+
+    def clear
+      __cloudflare_warn_mutation
+      @overlay = {}
+      @deleted = {}
+      @cleared = true
+      self
+    end
+
+    def update(other)
+      raise TypeError, "ENV update value must be a Hash" unless other.is_a?(Hash)
+
+      __cloudflare_validate_entries(other)
+      __cloudflare_warn_mutation
+      other.each do |key, value|
+        __cloudflare_set(key, value)
+      end
+      self
+    end
+
+    alias merge! update
+
+    def replace(other)
+      raise TypeError, "ENV replace value must be a Hash" unless other.is_a?(Hash)
+
+      __cloudflare_validate_entries(other)
+      __cloudflare_warn_mutation
+      @overlay = {}
+      @deleted = {}
+      @cleared = true
+      other.each do |key, value|
+        __cloudflare_set(key, value)
+      end
+      self
+    end
+
+    def inspect
+      "#<ENV (Cloudflare request overlay)>"
+    end
+
+    alias to_s inspect
+
+    def to_h
+      raise NotImplementedError, "Cloudflare ENV enumeration is not supported"
+    end
+
+    alias to_hash to_h
+
+    private
+
+    def __cloudflare_set(key, value)
+      if value.nil?
+        @overlay.delete(key)
+        @deleted[key] = true
+      else
+        @deleted.delete(key)
+        @overlay[key] = value
+      end
+    end
+
+    def __cloudflare_validate_entries(entries)
+      entries.each do |key, value|
+        __cloudflare_validate_key(key)
+        __cloudflare_validate_value(value)
+      end
+    end
+
+    def __cloudflare_validate_key(key)
+      raise TypeError, "ENV key must be a String" unless key.is_a?(String)
+      raise ArgumentError, "ENV key must not be empty" if key.empty?
+    end
+
+    def __cloudflare_validate_value(value)
+      raise TypeError, "ENV value must be a String or nil" unless value.nil? || value.is_a?(String)
+    end
+
+    def __cloudflare_warn_mutation
+      Cloudflare.__warn_env_mutation
+    end
+  end
+
   def self.kv_get(key)
     KV.get(key)
   end
@@ -578,3 +719,6 @@ module Cloudflare
     KV.set(key, value, **options)
   end
 end
+
+Object.__send__(:remove_const, :ENV) if Object.const_defined?(:ENV)
+ENV = Cloudflare::EnvironmentVariables.new

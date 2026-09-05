@@ -37,9 +37,21 @@ if ENV.key?("FEATURE_FLAGS")
 end
 ```
 
-`ENV[key]` returns a PicoRuby String or `nil`, and `ENV.key?(key)` returns a
-boolean. The bridge is read-only. It does not expose `ENV[]=`, enumeration, or
-the process environment used while building the Wasm module.
+`ENV[key]` returns a PicoRuby String or `nil`; `ENV.fetch` and `ENV.key?` use
+the same values. Assignments and other mutations create a request-local Ruby
+overlay. They do not change the Cloudflare variable or secret, and emit a
+value-free warning to stderr:
+
+```ruby
+ENV["API_URL"] = "http://test.invalid"
+ENV["API_URL"] # => "http://test.invalid" for this request only
+```
+
+The dedicated `ENV` object is not a Hash. Its overlay is cleared before every
+Rack request, including when a runtime is manually reused. `delete`, `clear`,
+`update`/`merge!`, and `replace` follow the same model. Keys and non-nil values
+must be Strings. Other Hash mutation methods, enumeration, and the process
+environment used while building the Wasm module are not exposed.
 
 Cloudflare text variables and secrets are returned unchanged. JSON variables
 are serialized to compact JSON strings, matching their JavaScript `env` value.

@@ -10,6 +10,22 @@ class BindingsApp
       [200, { "content-type" => "text/plain; charset=utf-8" }, [
         "#{text}|#{json}|#{secret}|#{present}|#{resource}",
       ]]
+    when "/env/overlay"
+      original = ENV.fetch("TEXT_VALUE")
+      ENV["TEXT_VALUE"] = "overridden"
+      assigned = [ENV["TEXT_VALUE"], ENV.fetch("TEXT_VALUE"), ENV.key?("TEXT_VALUE")]
+      deleted = ENV.delete("TEXT_VALUE")
+      missing = [ENV["TEXT_VALUE"], ENV.fetch("TEXT_VALUE", "default"), ENV.key?("TEXT_VALUE")]
+      ENV.update("FIRST" => "one", "REMOVED" => nil)
+      updated = [ENV["FIRST"], ENV.key?("REMOVED")]
+      ENV.replace("SECOND" => "two")
+      replaced = [ENV["FIRST"], ENV["SECOND"], ENV["SECRET_VALUE"]]
+      [200, { "content-type" => "text/plain" }, [
+        [original, assigned, deleted, missing, updated, replaced,
+         ENV.is_a?(Hash), ENV.respond_to?(:shift), ENV.inspect].inspect,
+      ]]
+    when "/env/overlay/reset"
+      [200, { "content-type" => "text/plain" }, [[ENV["TEXT_VALUE"], ENV["SECRET_VALUE"]].inspect]]
     when "/cloudflare/env"
       cloudflare = env["cloudflare.env"]
       [200, { "content-type" => "text/plain; charset=utf-8" }, [
