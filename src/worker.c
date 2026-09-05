@@ -788,7 +788,7 @@ mrb_picoruby_worker_wasm_gem_init(mrb_state *mrb)
   mrb_define_module_function(mrb, cloudflare, "__kv_get", mrb_cloudflare_kv_get, MRB_ARGS_REQ(2));
   mrb_define_module_function(mrb, cloudflare, "__kv_put", mrb_cloudflare_kv_set, MRB_ARGS_REQ(4));
   mrb_define_module_function(mrb, cloudflare, "__queue_send", mrb_cloudflare_queue_send, MRB_ARGS_REQ(2));
-  mrb_define_module_function(mrb, cloudflare, "__env_get", mrb_cloudflare_env_get, MRB_ARGS_REQ(1));
+  mrb_define_module_function(mrb, cloudflare, "__env_get_raw", mrb_cloudflare_env_get, MRB_ARGS_REQ(1));
   mrb_define_module_function(mrb, cloudflare, "__warn_env_mutation", mrb_cloudflare_warn_env_mutation,
                              MRB_ARGS_NONE());
   mrb_define_module_function(mrb, cloudflare, "__env_binding_type", mrb_cloudflare_env_binding_type,

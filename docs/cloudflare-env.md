@@ -30,9 +30,14 @@ included accidentally in diagnostics through `Cloudflare::Environment#inspect`.
 
 KV and Queue resources are identified by the generated binding-type registry,
 whose source is `wrangler.jsonc`. The runtime does not infer types from object
-methods, so unsupported resources cannot be mistaken for KV. Scalar text,
-JSON, and secret values are returned as Strings; JSON values use compact JSON
-encoding.
+methods, so unsupported resources cannot be mistaken for KV. Text and secret
+values are returned as Strings. JSON objects, arrays, booleans, numbers, and
+null retain their types as `Hash`, `Array`, `true`/`false`, numeric values, and
+`nil` respectively.
+
+JSON null is present even though its value is `nil`: `key?` returns `true` and
+`fetch` returns `nil`. For an undefined name, `key?` returns `false`, `[]`
+returns `nil`, and `fetch` without a default or block raises `KeyError`.
 
 Worker variables and secrets are exposed through the ordinary PicoRuby `ENV`
 object as a special direct bypass:
@@ -62,8 +67,10 @@ Rack request, including when a runtime is manually reused. `delete`, `clear`,
 must be Strings. Other Hash mutation methods, enumeration, and the process
 environment used while building the Wasm module are not exposed.
 
-Cloudflare text variables and secrets are returned unchanged. JSON variables
-are serialized to compact JSON strings, matching their JavaScript `env` value.
+Through `ENV`, Cloudflare text variables and secrets are returned unchanged,
+while JSON values are serialized to compact JSON strings. Thus JSON `false`
+and `null` become `"false"` and `"null"`; both remain present according to
+`ENV.key?`.
 Resource bindings (KV, Queues, D1, service bindings, and similar objects) are
 not `ENV` values and return `nil` from that interface. Access supported
 resources through `env["cloudflare.env"]` instead.

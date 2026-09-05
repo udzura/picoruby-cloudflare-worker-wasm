@@ -15,6 +15,7 @@ const DEFAULT_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const strictDecoder = new TextDecoder("utf-8", { fatal: true });
+const missingEnvironmentValue = Symbol("missingEnvironmentValue");
 
 export class RequestBodyTooLargeError extends Error {
   constructor(limit) {
@@ -206,11 +207,11 @@ function readEnvironmentValue(env, key) {
   }
 
   const value = env[key];
-  if (value === undefined) return null;
+  if (value === undefined) return missingEnvironmentValue;
   if (typeof value === "string") return value;
-  if (isResourceBinding(value)) return null;
-  if (isJsonValue(value)) return JSON.stringify(value);
-  return null;
+  if (isResourceBinding(value)) return missingEnvironmentValue;
+  if (isJsonValue(value)) return value;
+  return missingEnvironmentValue;
 }
 
 function readBindingType(env, bindingTypes, key) {
@@ -227,7 +228,9 @@ export function createEnvironmentBindings(env, bindingTypes = {}) {
     picorbWorkerEnvGetBridge: (key) => {
       return captureHostCallSync(() => {
         const value = readEnvironmentValue(env, key);
-        return value === null ? hostMissing() : hostOk(utf8(value));
+        return value === missingEnvironmentValue
+          ? hostMissing()
+          : hostOk(utf8(JSON.stringify(value)));
       });
     },
     picorbWorkerEnvBindingTypeBridge: (key) => {

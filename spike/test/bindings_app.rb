@@ -26,11 +26,29 @@ class BindingsApp
       ]]
     when "/env/overlay/reset"
       [200, { "content-type" => "text/plain" }, [[ENV["TEXT_VALUE"], ENV["SECRET_VALUE"]].inspect]]
+    when "/env/value-types"
+      [200, { "content-type" => "text/plain" }, [[
+        ENV["JSON_VALUE"], ENV["ARRAY_VALUE"], ENV["BOOL_VALUE"],
+        ENV["NUMBER_VALUE"], ENV["NULL_VALUE"], ENV.key?("NULL_VALUE"),
+      ].inspect]]
     when "/cloudflare/env"
       cloudflare = env["cloudflare.env"]
       [200, { "content-type" => "text/plain; charset=utf-8" }, [
         "#{cloudflare.TEXT_VALUE}|#{cloudflare.JSON_VALUE}|#{cloudflare.SECOND_KV.class}|#{cloudflare.QUEUE_FOO.class}",
       ]]
+    when "/cloudflare/env/value-types"
+      cloudflare = env["cloudflare.env"]
+      missing_error = begin
+        cloudflare.fetch("MISSING_VALUE")
+      rescue KeyError => error
+        error.class
+      end
+      [200, { "content-type" => "text/plain" }, [[
+        cloudflare.JSON_VALUE, cloudflare.ARRAY_VALUE, cloudflare.BOOL_VALUE,
+        cloudflare.NUMBER_VALUE, cloudflare.NULL_VALUE,
+        cloudflare.key?("NULL_VALUE"), cloudflare.fetch("NULL_VALUE"),
+        cloudflare["MISSING_VALUE"], cloudflare.key?("MISSING_VALUE"), missing_error,
+      ].inspect]]
     when "/cloudflare/env/inspect"
       cloudflare = env["cloudflare.env"]
       cloudflare.SECRET_VALUE

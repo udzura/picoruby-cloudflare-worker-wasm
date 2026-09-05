@@ -471,8 +471,27 @@ module Rackup
 end
 
 module Cloudflare
+  # This Wasm build does not define RUBY_DESCRIPTION, which picoruby-json
+  # otherwise uses to select its parser implementation.
+  JSON.use_regexp = false if Object.const_defined?(:JSON) && JSON.respond_to?(:use_regexp=)
+
   def self.__normalize_binding_name(name)
     name.to_s.dup.freeze
+  end
+
+  def self.__env_lookup(name)
+    encoded = __env_get_raw(name)
+    return [false, nil] if encoded.nil?
+
+    [true, JSON.parse(encoded)]
+  end
+
+  def self.__env_get(name)
+    encoded = __env_get_raw(name)
+    return nil if encoded.nil?
+
+    value = JSON.parse(encoded)
+    value.is_a?(String) ? value : encoded
   end
 
   class Environment
@@ -551,8 +570,8 @@ module Cloudflare
         elsif type == "queue"
           value = Queue.new(binding_name)
         else
-          value = Cloudflare.__env_get(binding_name)
-          return MISSING if value.nil?
+          present, value = Cloudflare.__env_lookup(binding_name)
+          return MISSING unless present
         end
         @bindings[binding_name] = value
       end

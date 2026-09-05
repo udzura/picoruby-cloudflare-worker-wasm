@@ -289,12 +289,14 @@ assert.match(hostErrorMessage(missingBindingFrame), /Cloudflare binding MISSING_
 const environmentBindings = createEnvironmentBindings({
   TEXT_VALUE: "value",
   JSON_VALUE: { enabled: true, retries: 3 },
+  BOOL_VALUE: false,
+  NULL_VALUE: null,
   SECRET_VALUE: "not-logged",
   KV_BINDING: { get() {}, put() {} },
 }, { KV_BINDING: "kv" });
 hostResult = decodeHostResult(await environmentBindings.picorbWorkerEnvGetBridge("TEXT_VALUE"));
 assert.equal(hostResult.kind, HostResultKind.ok);
-assert.equal(new TextDecoder().decode(hostResult.payload), "value");
+assert.equal(new TextDecoder().decode(hostResult.payload), '"value"');
 
 hostResult = decodeHostResult(await environmentBindings.picorbWorkerEnvGetBridge("JSON_VALUE"));
 assert.equal(hostResult.kind, HostResultKind.ok);
@@ -302,7 +304,15 @@ assert.equal(new TextDecoder().decode(hostResult.payload), '{"enabled":true,"ret
 
 hostResult = decodeHostResult(await environmentBindings.picorbWorkerEnvGetBridge("SECRET_VALUE"));
 assert.equal(hostResult.kind, HostResultKind.ok);
-assert.equal(new TextDecoder().decode(hostResult.payload), "not-logged");
+assert.equal(new TextDecoder().decode(hostResult.payload), '"not-logged"');
+
+hostResult = decodeHostResult(await environmentBindings.picorbWorkerEnvGetBridge("BOOL_VALUE"));
+assert.equal(hostResult.kind, HostResultKind.ok);
+assert.equal(new TextDecoder().decode(hostResult.payload), "false");
+
+hostResult = decodeHostResult(await environmentBindings.picorbWorkerEnvGetBridge("NULL_VALUE"));
+assert.equal(hostResult.kind, HostResultKind.ok);
+assert.equal(new TextDecoder().decode(hostResult.payload), "null");
 
 hostResult = decodeHostResult(await environmentBindings.picorbWorkerEnvGetBridge("KV_BINDING"));
 assert.equal(hostResult.kind, HostResultKind.missing);
@@ -371,6 +381,10 @@ const runtimeQueueMessages = [];
 const runtimeWorkerEnv = {
   TEXT_VALUE: "worker-value",
   JSON_VALUE: { retries: 3 },
+  ARRAY_VALUE: ["first", 2],
+  BOOL_VALUE: false,
+  NUMBER_VALUE: 42,
+  NULL_VALUE: null,
   SECRET_VALUE: "secret-value",
   class: "binding-named-class",
   KV_BINDING: { get() {}, put() {} },
@@ -445,6 +459,15 @@ const environmentOverlayResetResponse = await dispatch(
 );
 assert.equal(await environmentOverlayResetResponse.text(), '["worker-value", "secret-value"]');
 
+const environmentValueTypesResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/env/value-types"),
+);
+assert.equal(
+  await environmentValueTypesResponse.text(),
+  String.raw`["{\"retries\":3}", "[\"first\",2]", "false", "42", "null", true]`,
+);
+
 const mutableBindingNameResponse = await dispatch(
   bindingsRuntime,
   new Request("https://example.com/binding/mutable-name"),
@@ -467,7 +490,16 @@ const cloudflareEnvironmentResponse = await dispatch(
 );
 assert.equal(
   await cloudflareEnvironmentResponse.text(),
-  'worker-value|{"retries":3}|Cloudflare::KV|Cloudflare::Queue',
+  'worker-value|{"retries" => 3}|Cloudflare::KV|Cloudflare::Queue',
+);
+
+const cloudflareEnvironmentValueTypesResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/cloudflare/env/value-types"),
+);
+assert.equal(
+  await cloudflareEnvironmentValueTypesResponse.text(),
+  '[{"retries" => 3}, ["first", 2], false, 42, nil, true, nil, nil, false, KeyError]',
 );
 
 const cloudflareEnvironmentInspectResponse = await dispatch(
