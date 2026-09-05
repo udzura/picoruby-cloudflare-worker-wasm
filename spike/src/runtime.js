@@ -27,14 +27,6 @@ export class RequestBodyTooLargeError extends Error {
   }
 }
 
-async function unavailableKvGet() {
-  throw new Error("PICORUBY_KV binding is not configured");
-}
-
-async function unavailableKvSet() {
-  throw new Error("PICORUBY_KV binding is not configured");
-}
-
 async function unavailableHostBridge() {
   return await captureHostCall(async () => {
     throw new HostBindingError("PicoRuby Worker binding is not configured");
@@ -53,8 +45,6 @@ const defaultRuntimeBindings = {
     await Promise.resolve();
     return left + right;
   },
-  picorbWorkerKvGet: unavailableKvGet,
-  picorbWorkerKvSet: unavailableKvSet,
   picorbWorkerKvGetBridge: unavailableHostBridge,
   picorbWorkerKvPutBridge: unavailableHostBridge,
   picorbWorkerQueueSendBridge: unavailableHostBridge,
@@ -99,19 +89,6 @@ export function createCloudflareKvBindings(env, bindingTypes = {}) {
   };
 
   return {
-    // The one-argument form remains for the generated ABI v1 runtime. The
-    // two-argument form is the generic binding API for the next C bridge.
-    picorbWorkerKvGet: async (bindingNameOrKey, key) => {
-      const bindingName = key === undefined ? "PICORUBY_KV" : bindingNameOrKey;
-      const actualKey = key === undefined ? bindingNameOrKey : key;
-      return await get(bindingName, actualKey);
-    },
-    picorbWorkerKvSet: async (bindingNameOrKey, keyOrValue, value) => {
-      const bindingName = value === undefined ? "PICORUBY_KV" : bindingNameOrKey;
-      const key = value === undefined ? bindingNameOrKey : keyOrValue;
-      const actualValue = value === undefined ? keyOrValue : value;
-      await put(bindingName, key, actualValue);
-    },
     picorbWorkerKvGetBridge: async (bindingName, key) => {
       return await captureHostCall(async () => {
         const value = await get(bindingName, key);

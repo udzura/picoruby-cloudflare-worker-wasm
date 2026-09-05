@@ -576,9 +576,9 @@ module Cloudflare
       else
         type = Cloudflare.__env_binding_type(binding_name)
         if type == "kv"
-          value = KV.new(binding_name)
+          value = KV.__build(binding_name)
         elsif type == "queue"
-          value = Queue.new(binding_name)
+          value = Queue.__build(binding_name)
         else
           present, value = Cloudflare.__env_lookup(binding_name)
           return MISSING unless present
@@ -601,15 +601,17 @@ module Cloudflare
     def self.from_env(rack_env, binding_name)
       Environment.from_rack(rack_env).binding(binding_name, self)
     end
+
+    def self.__build(binding_name)
+      new(binding_name)
+    end
+
+    class << self
+      private :new
+    end
   end
 
   class KV < Binding
-    DEFAULT_BINDING = "PICORUBY_KV"
-
-    def initialize(binding_name = DEFAULT_BINDING)
-      super(binding_name)
-    end
-
     def get(key)
       Cloudflare.__kv_get(@binding_name, key)
     end
@@ -623,21 +625,6 @@ module Cloudflare
       Cloudflare.__kv_put(@binding_name, key, value, JSON.generate(options))
     end
 
-    def set(key, value, **options)
-      put(key, value, **options)
-    end
-
-    def self.get(key)
-      new.get(key)
-    end
-
-    def self.put(key, value, **options)
-      new.put(key, value, **options)
-    end
-
-    def self.set(key, value, **options)
-      new.set(key, value, **options)
-    end
   end
 
   class Queue < Binding
@@ -786,13 +773,6 @@ module Cloudflare
     end
   end
 
-  def self.kv_get(key)
-    KV.get(key)
-  end
-
-  def self.kv_set(key, value, **options)
-    KV.set(key, value, **options)
-  end
 end
 
 Object.__send__(:remove_const, :ENV) if Object.const_defined?(:ENV)

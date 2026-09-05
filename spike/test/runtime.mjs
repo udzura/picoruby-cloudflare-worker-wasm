@@ -223,8 +223,8 @@ assert.equal(asyncHostCallCount, 2, "Ruby resumes across repeated async host cal
 
 const kvStore = new Map();
 const expectedKvValue = new TextEncoder().encode("PicoRuby KV\u0000value");
-const kvBindings = createCloudflareKvBindings({
-  PICORUBY_KV: {
+const kvBindings = createCloudflareBindings({
+  CACHE_KV: {
     async get(key, type) {
       assert.equal(type, "arrayBuffer");
       const value = kvStore.get(key);
@@ -234,7 +234,7 @@ const kvBindings = createCloudflareKvBindings({
       kvStore.set(key, new Uint8Array(value));
     },
   },
-}, { PICORUBY_KV: "kv" });
+}, { CACHE_KV: "kv" });
 const genericKvStore = new Map();
 const genericKvOptions = new Map();
 const genericKvBindings = createCloudflareKvBindings({
@@ -407,6 +407,7 @@ const runtimeWorkerEnv = {
   class: "binding-named-class",
   KV_BINDING: { get() {}, put() {} },
   BUCKET: { get() {}, put() {}, head() {}, list() {} },
+  BROKEN_KV: {},
   SECOND_KV: {
     async get(key, type) {
       assert.equal(type, "arrayBuffer");
@@ -427,7 +428,6 @@ const runtimeWorkerEnv = {
     },
   },
 };
-runtimeWorkerEnv.PICORUBY_KV = runtimeWorkerEnv.SECOND_KV;
 const runtimeWarnings = [];
 const originalConsoleError = console.error;
 console.error = (...parts) => runtimeWarnings.push(parts.join(" "));
@@ -439,9 +439,9 @@ try {
     bindingsAppBytecode,
     createCloudflareBindings(runtimeWorkerEnv, {
       KV_BINDING: "kv",
-      PICORUBY_KV: "kv",
       QUEUE_FOO: "queue",
       SECOND_KV: "kv",
+      BROKEN_KV: "kv",
     }),
   );
 } finally {
@@ -540,8 +540,7 @@ assert.deepEqual(namedKvOptions.get("named-key"), {});
 const ttlResponse = await dispatch(bindingsRuntime, new Request("https://example.com/kv/ttl"));
 assert.equal(await ttlResponse.text(), "ttl-set");
 for (const [key, ttl] of [
-  ["ttl-direct", 60], ["ttl-from-env", 120], ["ttl-class-put", 180],
-  ["ttl-class-set", 240], ["ttl-module-set", 300],
+  ["ttl-direct", 60], ["ttl-from-env", 120],
 ]) {
   assert.deepEqual(namedKvOptions.get(key), { expirationTtl: ttl });
   assert.deepEqual(namedKvStore.get(key), new Uint8Array([0, 255]), "TTL writes remain binary-safe");
@@ -595,7 +594,7 @@ const missingBindingResponse = await dispatch(
   bindingsRuntime,
   new Request("https://example.com/kv/missing-binding"),
 );
-assert.match(await missingBindingResponse.text(), /binding-error=Cloudflare binding MISSING_KV is not registered/);
+assert.match(await missingBindingResponse.text(), /binding-error=undefined Cloudflare binding `MISSING_KV'/);
 
 const rejectedKvResponse = await dispatch(
   bindingsRuntime,
@@ -637,13 +636,13 @@ const unsupportedResourceResponse = await dispatch(
 );
 assert.match(await unsupportedResourceResponse.text(), /binding-error=undefined Cloudflare binding `BUCKET'/);
 
-const unsupportedResourceAsKvResponse = await dispatch(
+const misconfiguredKvResponse = await dispatch(
   bindingsRuntime,
-  new Request("https://example.com/binding/unsupported-resource-as-kv"),
+  new Request("https://example.com/binding/misconfigured-kv"),
 );
 assert.match(
-  await unsupportedResourceAsKvResponse.text(),
-  /binding-error=Cloudflare binding BUCKET is not registered/,
+  await misconfiguredKvResponse.text(),
+  /binding-error=Cloudflare KV binding BROKEN_KV is not configured/,
 );
 
 const missingBindingMethodResponse = await dispatch(
@@ -667,13 +666,25 @@ const hierarchyResponse = await dispatch(
 );
 assert.equal(await hierarchyResponse.text(), "[true, true, true, true]");
 
+const formalApiResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/kv/formal-api"),
+);
+assert.equal(
+  await formalApiResponse.text(),
+  "[true, true, false, false, false, NoMethodError]",
+);
+
 await closeRuntime(bindingsRuntime);
 
 const malformedBridgeRuntime = await createRuntime(
   createPicoRuby,
   wasmModule,
   bindingsAppBytecode,
-  { picorbWorkerKvGetBridge: async () => new Uint8Array([0]) },
+  mergeBindings(
+    createEnvironmentBindings({ SECOND_KV: {} }, { SECOND_KV: "kv" }),
+    { picorbWorkerKvGetBridge: async () => new Uint8Array([0]) },
+  ),
 );
 const protocolErrorResponse = await dispatch(
   malformedBridgeRuntime,

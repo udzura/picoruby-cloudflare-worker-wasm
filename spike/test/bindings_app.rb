@@ -75,13 +75,10 @@ class BindingsApp
       value = "\x00\xff"
       results = [
         env["cloudflare.env"].SECOND_KV.put("ttl-direct", value, ttl: 60),
-        Cloudflare::KV.from_env(env, "SECOND_KV").set("ttl-from-env", value, ttl: 120),
-        Cloudflare::KV.put("ttl-class-put", value, ttl: 180),
-        Cloudflare::KV.set("ttl-class-set", value, ttl: 240),
-        Cloudflare.kv_set("ttl-module-set", value, ttl: 300),
+        Cloudflare::KV.from_env(env, "SECOND_KV").put("ttl-from-env", value, ttl: 120),
         env["cloudflare.env"].SECOND_KV.put("ttl-nil", value, ttl: nil),
       ]
-      [200, { "content-type" => "text/plain" }, [results == [nil, nil, nil, nil, nil, nil] ? "ttl-set" : "unexpected-result"]]
+      [200, { "content-type" => "text/plain" }, [results == [nil, nil, nil] ? "ttl-set" : "unexpected-result"]]
     when "/kv/ttl/invalid"
       begin
         env["cloudflare.env"].SECOND_KV.put("ttl-invalid", "value", ttl: 59)
@@ -100,13 +97,13 @@ class BindingsApp
       [200, { "content-type" => "text/plain; charset=utf-8" }, [direct.equal?(explicit) ? "same" : "different"]]
     when "/kv/missing-binding"
       begin
-        Cloudflare::KV.new("MISSING_KV").get("key")
+        Cloudflare::KV.from_env(env, "MISSING_KV").get("key")
       rescue Cloudflare::BindingError => error
         [200, { "content-type" => "text/plain; charset=utf-8" }, ["binding-error=#{error.message}"]]
       end
     when "/kv/rejected"
       begin
-        Cloudflare::KV.new("SECOND_KV").get("reject")
+        Cloudflare::KV.from_env(env, "SECOND_KV").get("reject")
       rescue Cloudflare::HostError => error
         [200, { "content-type" => "text/plain; charset=utf-8" }, ["host-error=#{error.message}"]]
       end
@@ -134,9 +131,9 @@ class BindingsApp
       rescue Cloudflare::BindingError => error
         [200, { "content-type" => "text/plain" }, ["binding-error=#{error.message}"]]
       end
-    when "/binding/unsupported-resource-as-kv"
+    when "/binding/misconfigured-kv"
       begin
-        Cloudflare::KV.new("BUCKET").get("key")
+        Cloudflare::KV.from_env(env, "BROKEN_KV").get("key")
       rescue Cloudflare::BindingError => error
         [200, { "content-type" => "text/plain" }, ["binding-error=#{error.message}"]]
       end
@@ -177,7 +174,7 @@ class BindingsApp
       end
     when "/kv/protocol-error"
       begin
-        Cloudflare::KV.new("SECOND_KV").get("key")
+        Cloudflare::KV.from_env(env, "SECOND_KV").get("key")
       rescue Cloudflare::ProtocolError => error
         [200, { "content-type" => "text/plain" }, ["protocol-error=#{error.message}"]]
       end
@@ -189,6 +186,17 @@ class BindingsApp
         Cloudflare::Error < StandardError,
       ]
       [200, { "content-type" => "text/plain" }, [hierarchy.inspect]]
+    when "/kv/formal-api"
+      cache = Cloudflare::KV.from_env(env, "SECOND_KV")
+      direct_new_error = begin
+        Cloudflare::KV.new("SECOND_KV")
+      rescue NoMethodError => error
+        error.class
+      end
+      [200, { "content-type" => "text/plain" }, [[
+        cache.respond_to?(:get), cache.respond_to?(:put), cache.respond_to?(:set),
+        Cloudflare::KV.respond_to?(:get), Cloudflare.respond_to?(:kv_get), direct_new_error,
+      ].inspect]]
     else
       [404, { "content-type" => "text/plain; charset=utf-8" }, ["Not found"]]
     end

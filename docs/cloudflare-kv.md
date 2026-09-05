@@ -1,6 +1,6 @@
 # Cloudflare KV
 
-The spike binds one namespace as `PICORUBY_KV` in `spike/wrangler.jsonc`.
+The spike binds one namespace as `CACHE_KV` in `spike/wrangler.jsonc`.
 Wrangler creates a local namespace for `wrangler dev`. Its automatic resource
 provisioning creates the remote namespace on the first deploy and records its
 ID in the configuration.
@@ -27,32 +27,14 @@ cache = Cloudflare::KV.from_env(request.env, "CACHE_KV")
 `Cloudflare::KV.from_env` validates that the named binding is KV. Asking for a
 missing binding, Queue, or scalar value raises `Cloudflare::BindingError`.
 
-The earlier default API remains available for `PICORUBY_KV` compatibility:
-
-```ruby
-Cloudflare::KV.set("greeting", "hello")
-value = Cloudflare::KV.get("greeting")
-# value is "hello", or nil when the key does not exist
-```
-
-Direct construction also remains available:
-
-```ruby
-cache = Cloudflare::KV.new("CACHE_KV")
-cache.put("greeting", "hello")
-cache.get("greeting")
-```
-
 Values remain binary-safe PicoRuby Strings. The Worker host reads KV with
-`arrayBuffer` and sends the exact bytes through the JSPI bridge. `put` (and its
-`set` alias) returns
-`nil` after the KV write Promise resolves.
+`arrayBuffer` and sends the exact bytes through the JSPI bridge. A successful
+`put` returns `nil` after the KV write Promise resolves.
 
 Pass `ttl:` to expire a value after a number of seconds:
 
 ```ruby
 cache.put("greeting", "hello", ttl: 300)
-# Also supported by set, Cloudflare::KV.put/set, and Cloudflare.kv_set.
 ```
 
 `ttl` must be a JavaScript-safe integer of at least 60 seconds, following
@@ -63,9 +45,9 @@ bridge as a JSON object (`{"ttl":300}`); JS maps `ttl` to `expirationTtl`.
 This keeps the bridge extensible without adding positional arguments for each
 future option. Only `ttl:` is currently supported.
 
-`Cloudflare.kv_get` and `Cloudflare.kv_set` remain aliases for the default
-namespace. Rack application code should normally resolve bindings through
-`env["cloudflare.env"]` or `Cloudflare::KV.from_env`.
+The two public entry points are `env["cloudflare.env"]` and
+`Cloudflare::KV.from_env`. There is no implicit default namespace; class-level
+get/put methods, direct construction, and `set` aliases are not part of the API.
 
 All asynchronous host calls use a shared, versioned result frame. A rejected
 KV Promise raises `Cloudflare::HostError`. Missing, unregistered, or incorrectly
@@ -74,7 +56,7 @@ raise `Cloudflare::ProtocolError`.
 
 ## Scope and limits
 
-- `get` and `put` (`set`) are the only operations. Relative expiration via
+- `get` and `put` are the only operations. Relative expiration via
   `ttl:` is supported; metadata, absolute expiration, delete, list, and batch
   operations are not included yet.
 - Keys follow Cloudflare's basic constraints: they must not be empty, `.` or

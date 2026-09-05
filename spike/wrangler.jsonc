@@ -5,7 +5,7 @@
 	"compatibility_date": "2026-08-22",
 	"kv_namespaces": [
 		{
-			"binding": "PICORUBY_KV",
+			"binding": "CACHE_KV",
 			"id": "0f9573b8367a487c929ce1f71c617169"
 		}
 	]

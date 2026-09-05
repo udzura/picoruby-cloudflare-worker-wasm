@@ -93,13 +93,9 @@ The example defines `App < Sinatra::Base` and registers it with
 - any method at `/debug/request`, which dumps the Rack request state
 - any method at `/debug/raise`, which raises a dummy application exception
 - `GET /debug/jspi`, which suspends and resumes Ruby twice through JSPI
-- any method at `/kv/set`, which writes the fixed `spike-key` KV sample value
-- any method at `/kv/get`, which reads the fixed `spike-key` KV sample value
-
-`wrangler.jsonc` binds one namespace as `PICORUBY_KV`. Use local development
-when exercising the sample write endpoint. To verify the binary-safe default
-`Cloudflare::KV.set/get` bridge against Wrangler's local KV implementation,
-select `test/kv_app.rb` as the Ruby entrypoint:
+`wrangler.jsonc` binds one namespace as `CACHE_KV`. To verify the binary-safe
+named-binding API against Wrangler's local KV implementation, select
+`test/kv_app.rb` as the Ruby entrypoint:
 
 ```console
 PICORUBY_APP=test/kv_app.rb npm run dev
