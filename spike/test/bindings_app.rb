@@ -131,6 +131,20 @@ class BindingsApp
       [200, { "content-type" => "text/plain" }, [
         [binding.binding_name, binding.binding_name.frozen?, same_binding].inspect,
       ]]
+    when "/binding/introspection"
+      cloudflare = env["cloudflare.env"]
+      missing_error = begin
+        cloudflare.fetch("MISSING_BINDING")
+      rescue KeyError => error
+        error.class
+      end
+      [200, { "content-type" => "text/plain" }, [[
+        cloudflare.respond_to?(:SECOND_KV), cloudflare.respond_to?(:MISSING_BINDING),
+        cloudflare["SECOND_KV"].class, cloudflare["MISSING_BINDING"],
+        cloudflare.fetch("TEXT_VALUE"), cloudflare.fetch("MISSING_BINDING", "default"),
+        cloudflare.fetch("MISSING_BINDING") { |name| "block:#{name}" }, missing_error,
+        cloudflare.class, cloudflare["class"],
+      ].inspect]]
     when "/binding/missing"
       begin
         env["cloudflare.env"].MISSING_BINDING

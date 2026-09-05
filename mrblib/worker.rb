@@ -476,25 +476,17 @@ module Cloudflare
   end
 
   class Environment
+    MISSING = Object.new.freeze
+
     def initialize
       @bindings = {}
     end
 
     def binding(name, expected_class = nil)
       binding_name = Cloudflare.__normalize_binding_name(name)
-      if @bindings.key?(binding_name)
-        value = @bindings[binding_name]
-      else
-        type = Cloudflare.__env_binding_type(binding_name)
-        if type == "kv"
-          value = KV.new(binding_name)
-        elsif type == "queue"
-          value = Queue.new(binding_name)
-        else
-          value = Cloudflare.__env_get(binding_name)
-          raise NoMethodError, "undefined Cloudflare binding `#{binding_name}'" if value.nil?
-        end
-        @bindings[binding_name] = value
+      value = __resolve(binding_name)
+      if value.equal?(MISSING)
+        raise NoMethodError, "undefined Cloudflare binding `#{binding_name}'"
       end
 
       if expected_class && !value.is_a?(expected_class)
@@ -503,10 +495,37 @@ module Cloudflare
       value
     end
 
+    def [](name)
+      value = __resolve(Cloudflare.__normalize_binding_name(name))
+      value.equal?(MISSING) ? nil : value
+    end
+
+    def fetch(name, *defaults, &block)
+      raise ArgumentError, "wrong number of arguments" if defaults.size > 1
+
+      binding_name = Cloudflare.__normalize_binding_name(name)
+      value = __resolve(binding_name)
+      return value unless value.equal?(MISSING)
+      return block.call(name) if block
+      return defaults[0] if defaults.size == 1
+
+      raise KeyError, "key not found: #{binding_name}"
+    end
+
+    def key?(name)
+      !__resolve(Cloudflare.__normalize_binding_name(name)).equal?(MISSING)
+    end
+
+    alias has_key? key?
+
     def method_missing(name, *arguments, &block)
       return super unless arguments.empty? && block.nil?
 
       binding(name)
+    end
+
+    def respond_to_missing?(name, include_private = false)
+      key?(name) || super
     end
 
     def inspect
@@ -518,6 +537,26 @@ module Cloudflare
       return environment if environment.is_a?(self)
 
       raise ArgumentError, "Rack env does not contain cloudflare.env"
+    end
+
+    private
+
+    def __resolve(binding_name)
+      if @bindings.key?(binding_name)
+        value = @bindings[binding_name]
+      else
+        type = Cloudflare.__env_binding_type(binding_name)
+        if type == "kv"
+          value = KV.new(binding_name)
+        elsif type == "queue"
+          value = Queue.new(binding_name)
+        else
+          value = Cloudflare.__env_get(binding_name)
+          return MISSING if value.nil?
+        end
+        @bindings[binding_name] = value
+      end
+      value
     end
   end
 

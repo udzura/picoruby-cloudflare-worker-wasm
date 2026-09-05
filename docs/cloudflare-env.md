@@ -8,12 +8,17 @@ cloudflare = request.env["cloudflare.env"]
 cache = cloudflare.CACHE_KV       # Cloudflare::KV
 events = cloudflare.EVENTS_QUEUE  # Cloudflare::Queue
 api_url = cloudflare.API_URL      # String
+same_cache = cloudflare["CACHE_KV"]
 ```
 
 The Ruby object is a request-scoped proxy, not a Wasm pointer to a JavaScript
 object. The JavaScript callbacks close over the original Worker `env`, and the
 proxy caches resolved Ruby wrappers for the duration of the Rack request. An
-unknown or unsupported property raises `NoMethodError`.
+unknown or unsupported property returns `nil` from `[]`; `fetch` supports the
+usual default and block forms and otherwise raises `KeyError`. Property syntax
+continues to raise `NoMethodError`. `key?` and `respond_to?` use the same
+resolver. Bindings whose names collide with Ruby methods remain available
+through `[]` or `fetch`, for example `cloudflare["class"]`.
 
 Binding names are copied and frozen when resolved. Mutating a caller-owned
 String afterward cannot change the resource used by an existing KV or Queue

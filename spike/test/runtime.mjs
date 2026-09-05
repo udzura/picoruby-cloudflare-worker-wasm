@@ -372,6 +372,7 @@ const runtimeWorkerEnv = {
   TEXT_VALUE: "worker-value",
   JSON_VALUE: { retries: 3 },
   SECRET_VALUE: "secret-value",
+  class: "binding-named-class",
   KV_BINDING: { get() {}, put() {} },
   BUCKET: { get() {}, put() {}, head() {}, list() {} },
   SECOND_KV: {
@@ -450,6 +451,15 @@ const mutableBindingNameResponse = await dispatch(
 );
 assert.equal(await mutableBindingNameResponse.text(), '["SECOND_KV", true, true]');
 assert.equal(new TextDecoder().decode(namedKvStore.get("stable-binding")), "stable-value");
+
+const bindingIntrospectionResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/binding/introspection"),
+);
+assert.equal(
+  await bindingIntrospectionResponse.text(),
+  '[true, false, Cloudflare::KV, nil, "worker-value", "default", "block:MISSING_BINDING", KeyError, Cloudflare::Environment, "binding-named-class"]',
+);
 
 const cloudflareEnvironmentResponse = await dispatch(
   bindingsRuntime,
