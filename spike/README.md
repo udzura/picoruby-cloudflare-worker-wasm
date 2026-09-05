@@ -97,7 +97,7 @@ The example defines `App < Sinatra::Base` and registers it with
 - any method at `/kv/get`, which reads the fixed `spike-key` KV sample value
 
 `wrangler.jsonc` binds one namespace as `PICORUBY_KV`. Use local development
-when exercising the sample write endpoint. To verify the binary-safe
+when exercising the sample write endpoint. To verify the binary-safe default
 `Cloudflare::KV.set/get` bridge against Wrangler's local KV implementation,
 select `test/kv_app.rb` as the Ruby entrypoint:
 
@@ -108,8 +108,10 @@ curl http://localhost:8787/kv/set
 curl http://localhost:8787/kv/get
 ```
 
-See [Cloudflare KV](../docs/cloudflare-kv.md) for the Ruby API and its current
-limits.
+See [Cloudflare KV](../docs/cloudflare-kv.md) and
+[Cloudflare environment values](../docs/cloudflare-env.md), and
+[Cloudflare Queues](../docs/cloudflare-queue.md) for the Ruby API and its
+current limits.
 
 ## Host binding factories
 
@@ -122,9 +124,9 @@ handleRequest(
   picoRubyWasm,
   appBytecode,
   request,
-  createFetchBindings(env),
   createCloudflareKvBindings(env),
-  createCloudflareD1Bindings(env),
+  createCloudflareQueueBindings(env),
+  createEnvironmentBindings(env),
 );
 ```
 
@@ -139,10 +141,15 @@ limit, per-request VM creation, and JSPI suspension/resumption.
 
 The Worker creates a fresh PicoRuby VM for each request. JavaScript buffers each
 Request asynchronously, then Ruby dispatch and response generation are
-synchronous except for JSPI-backed host calls.
-`/debug/jspi` is only a feasibility probe; production Cloudflare binding
-adapters other than KV and rejection-to-Ruby-exception mapping remain outside
-this spike.
+synchronous except for JSPI-backed host calls. The common host bridge carries
+success, missing values, and host errors in one binary result frame; rejected
+KV and Queue Promises become `Cloudflare::HostError` in Ruby. Each Rack env has
+a `cloudflare.env` proxy for KV, Queue, variables, and secrets. `ENV` retains a
+direct scalar-value bypass because Worker `env` is already available for the
+request.
+
+`/debug/jspi` is only a feasibility probe. Fetch, Access, and other
+Cloudflare binding adapters remain outside this spike.
 
 The current `picoruby-sinatra-covers` scope intentionally disables sessions,
 rack-protection, logging middleware, static files, templates, and development

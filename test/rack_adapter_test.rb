@@ -119,6 +119,10 @@ assert_equal("application/octet-stream", captured_env["CONTENT_TYPE"], "content 
 assert_equal("request.example.com", captured_env["HTTP_HOST"], "Host header replaces the URL-derived authority")
 assert_equal("yes", captured_env["HTTP_X_TEST_HEADER"], "headers use HTTP_ CGI keys")
 assert_equal("HTTP/2", captured_env["SERVER_PROTOCOL"], "HTTP protocol is mapped")
+assert(
+  captured_env["cloudflare.env"].is_a?(Cloudflare::Environment),
+  "Cloudflare environment proxy is present",
+)
 assert_equal([201, nil], finished, "response-finished callback runs")
 assert(response_body_source.closed, "enumerable response body is closed")
 

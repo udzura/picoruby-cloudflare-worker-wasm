@@ -270,6 +270,7 @@ module PicoRubyWorker
         "rack.input" => RackInput.new(body),
         "rack.errors" => RackErrors.new,
         "rack.response_finished" => [],
+        "cloudflare.env" => Cloudflare::Environment.new,
       }
 
       index = 0
@@ -469,13 +470,107 @@ module Rackup
 end
 
 module Cloudflare
-  module KV
-    def self.get(key)
-      Cloudflare.kv_get(key)
+  class Environment
+    def initialize
+      @bindings = {}
     end
 
-    def self.set(key, value)
-      Cloudflare.kv_set(key, value)
+    def binding(name, expected_class = nil)
+      binding_name = name.to_s
+      if @bindings.key?(binding_name)
+        value = @bindings[binding_name]
+      else
+        type = Cloudflare.__env_binding_type(binding_name)
+        if type == "kv"
+          value = KV.new(binding_name)
+        elsif type == "queue"
+          value = Queue.new(binding_name)
+        else
+          value = Cloudflare.__env_get(binding_name)
+          raise NoMethodError, "undefined Cloudflare binding `#{binding_name}'" if value.nil?
+        end
+        @bindings[binding_name] = value
+      end
+
+      if expected_class && !value.is_a?(expected_class)
+        raise ArgumentError, "Cloudflare binding `#{binding_name}' is not a #{expected_class}"
+      end
+      value
     end
+
+    def method_missing(name, *arguments, &block)
+      return super unless arguments.empty? && block.nil?
+
+      binding(name)
+    end
+
+    def self.from_rack(rack_env)
+      environment = rack_env["cloudflare.env"]
+      return environment if environment.is_a?(self)
+
+      raise ArgumentError, "Rack env does not contain cloudflare.env"
+    end
+  end
+
+  class Binding
+    def initialize(binding_name)
+      @binding_name = binding_name
+    end
+
+    def binding_name
+      @binding_name
+    end
+
+    def self.from_env(rack_env, binding_name)
+      Environment.from_rack(rack_env).binding(binding_name, self)
+    end
+  end
+
+  class KV < Binding
+    DEFAULT_BINDING = "PICORUBY_KV"
+
+    def initialize(binding_name = DEFAULT_BINDING)
+      super(binding_name)
+    end
+
+    def get(key)
+      Cloudflare.__kv_get(@binding_name, key)
+    end
+
+    def put(key, value, ttl: nil)
+      options = {}
+      options[:ttl] = ttl unless ttl.nil?
+      Cloudflare.__kv_put(@binding_name, key, value, JSON.generate(options))
+    end
+
+    def set(key, value, **options)
+      put(key, value, **options)
+    end
+
+    def self.get(key)
+      new.get(key)
+    end
+
+    def self.put(key, value, **options)
+      new.put(key, value, **options)
+    end
+
+    def self.set(key, value, **options)
+      new.set(key, value, **options)
+    end
+  end
+
+  class Queue < Binding
+    def send(message)
+      Cloudflare.__queue_send(@binding_name, message)
+    end
+  end
+
+  def self.kv_get(key)
+    KV.get(key)
+  end
+
+  def self.kv_set(key, value, **options)
+    KV.set(key, value, **options)
   end
 end

@@ -7,6 +7,7 @@ MRuby::Gem::Specification.new("picoruby-worker-wasm") do |spec|
 
   spec.add_conflict "picoruby-mrubyc"
   spec.add_conflict "picoruby-wasm"
+  spec.add_dependency "picoruby-json"
 
   bin_dir = File.join(build.build_dir, "bin")
   output_js = File.join(bin_dir, "picoruby-worker.js")

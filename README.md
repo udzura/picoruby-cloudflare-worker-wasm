@@ -3,13 +3,14 @@
 An external PicoRuby mrbgem that builds a small Rack-compatible runtime for
 [Cloudflare Workers](https://workers.cloudflare.com/).
 
-`spike/` is a runnable, bindings-free Worker project. It builds PicoRuby as
+`spike/` is a runnable Worker project. It builds PicoRuby as
 WebAssembly, compiles `spike/lib/app.rb` to mruby bytecode, and imports both
 artifacts from the Worker module.
 
 See [spike/README.md](spike/README.md) for setup and build instructions.
-The first Cloudflare binding is documented in
-[docs/cloudflare-kv.md](docs/cloudflare-kv.md).
+Cloudflare bindings are documented in [docs/cloudflare-env.md](docs/cloudflare-env.md),
+[docs/cloudflare-kv.md](docs/cloudflare-kv.md), and
+[docs/cloudflare-queue.md](docs/cloudflare-queue.md).
 
 ## Rack application
 
@@ -42,9 +43,12 @@ contract, limits, `Rack::Lint` results, and asynchronous roadmap.
 - direct handler registration without `config.ru`;
 - asynchronous request buffering in JavaScript and experimental JSPI-backed
   host calls during Ruby dispatch;
-- a fixed Cloudflare KV binding with binary-safe `get` and `set`;
-- no filesystem, sockets, runtime Ruby compilation, other Cloudflare binding
-  adapters, or streaming bodies.
+- named Cloudflare KV bindings with binary-safe `get` and `put` (`set`), optional `ttl:`, using JSPI;
+- Cloudflare Queue text-message producers using JSPI;
+- read-only Cloudflare text, JSON, and secret values through `ENV`;
+- request-scoped Worker binding access through Rack `cloudflare.env`;
+- no filesystem, sockets, runtime Ruby compilation, fetch, Access,
+  other Cloudflare binding adapters, or streaming bodies.
 
 `mruby-task` remains linked because it is required by `picoruby-mruby`, but the
 provided Worker HAL supports neither scheduling nor Fiber-based task APIs.

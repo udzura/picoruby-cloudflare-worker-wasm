@@ -3,6 +3,8 @@ import picoRubyWasm from "../dist/picoruby-worker.wasm";
 import appBytecode from "../dist/app.bin";
 import {
   createCloudflareKvBindings,
+  createCloudflareQueueBindings,
+  createEnvironmentBindings,
   handleRequest,
   RequestBodyTooLargeError,
 } from "./runtime.js";
@@ -16,6 +18,8 @@ export default {
         appBytecode,
         request,
         createCloudflareKvBindings(env),
+        createCloudflareQueueBindings(env),
+        createEnvironmentBindings(env),
       );
     } catch (error) {
       console.error(error);

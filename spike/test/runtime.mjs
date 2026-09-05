@@ -5,18 +5,26 @@ import createPicoRuby from "../dist/picoruby-worker.js";
 import {
   closeRuntime,
   createCloudflareKvBindings,
+  createCloudflareQueueBindings,
+  createEnvironmentBindings,
   createRuntime,
   dispatch,
   handleRequest,
   mergeBindings,
   RequestBodyTooLargeError,
 } from "../src/runtime.js";
+import {
+  decodeHostResult,
+  HostResultKind,
+  hostErrorMessage,
+} from "../src/host-bridge.js";
 
 const wasmModule = new WebAssembly.Module(
   fs.readFileSync(new URL("../dist/picoruby-worker.wasm", import.meta.url)),
 );
 const appBytecode = fs.readFileSync(new URL("../dist/app.bin", import.meta.url));
 const kvAppBytecode = fs.readFileSync(new URL("../dist/kv_app.bin", import.meta.url));
+const bindingsAppBytecode = fs.readFileSync(new URL("../dist/bindings_app.bin", import.meta.url));
 const imports = WebAssembly.Module.imports(wasmModule);
 const allowedWasiImports = new Set([
   "fd_close",
@@ -220,6 +228,116 @@ const kvBindings = createCloudflareKvBindings({
     },
   },
 });
+const genericKvStore = new Map();
+const genericKvOptions = new Map();
+const genericKvBindings = createCloudflareKvBindings({
+  FIRST_KV: {
+    async get(key, type) {
+      assert.equal(type, "arrayBuffer");
+      const value = genericKvStore.get(key);
+      return value === undefined ? null : value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+    },
+    async put(key, value, options) {
+      genericKvStore.set(key, new Uint8Array(value));
+      genericKvOptions.set(key, options);
+    },
+  },
+});
+const genericValue = new Uint8Array([0, 1, 2, 255]);
+let hostResult = decodeHostResult(
+  await genericKvBindings.picorbWorkerKvPutBridge("FIRST_KV", "binary", genericValue),
+);
+assert.equal(hostResult.kind, HostResultKind.ok);
+assert.deepEqual(genericKvStore.get("binary"), genericValue);
+assert.deepEqual(genericKvOptions.get("binary"), {});
+
+hostResult = decodeHostResult(
+  await genericKvBindings.picorbWorkerKvPutBridge("FIRST_KV", "ttl", genericValue, '{"ttl":60}'),
+);
+assert.equal(hostResult.kind, HostResultKind.ok);
+assert.deepEqual(genericKvOptions.get("ttl"), { expirationTtl: 60 });
+assert.deepEqual(genericKvStore.get("ttl"), genericValue);
+
+for (const optionsJson of [
+  "", "{", "null", "[]", "true", "60",
+  '{"ttl":59}', '{"ttl":0}', '{"ttl":-1}', '{"ttl":60.5}',
+  '{"ttl":"60"}', '{"ttl":false}', '{"ttl":null}',
+  '{"ttl":9007199254740992}', '{"ttl":1e309}', '{"unknown":60}',
+]) {
+  const frame = await genericKvBindings.picorbWorkerKvPutBridge("FIRST_KV", "invalid", genericValue, optionsJson);
+  assert.equal(decodeHostResult(frame).kind, HostResultKind.error, optionsJson);
+  assert.equal(genericKvStore.has("invalid"), false, "invalid options must not write KV");
+}
+
+hostResult = decodeHostResult(
+  await genericKvBindings.picorbWorkerKvGetBridge("FIRST_KV", "binary"),
+);
+assert.equal(hostResult.kind, HostResultKind.ok);
+assert.deepEqual(hostResult.payload, genericValue);
+
+hostResult = decodeHostResult(
+  await genericKvBindings.picorbWorkerKvGetBridge("FIRST_KV", "missing"),
+);
+assert.equal(hostResult.kind, HostResultKind.missing);
+
+const missingBindingFrame = await genericKvBindings.picorbWorkerKvGetBridge("MISSING_KV", "key");
+hostResult = decodeHostResult(missingBindingFrame);
+assert.equal(hostResult.kind, HostResultKind.error);
+assert.match(hostErrorMessage(missingBindingFrame), /KV binding MISSING_KV is not configured/);
+
+const environmentBindings = createEnvironmentBindings({
+  TEXT_VALUE: "value",
+  JSON_VALUE: { enabled: true, retries: 3 },
+  SECRET_VALUE: "not-logged",
+  KV_BINDING: { get() {}, put() {} },
+});
+hostResult = decodeHostResult(await environmentBindings.picorbWorkerEnvGetBridge("TEXT_VALUE"));
+assert.equal(hostResult.kind, HostResultKind.ok);
+assert.equal(new TextDecoder().decode(hostResult.payload), "value");
+
+hostResult = decodeHostResult(await environmentBindings.picorbWorkerEnvGetBridge("JSON_VALUE"));
+assert.equal(hostResult.kind, HostResultKind.ok);
+assert.equal(new TextDecoder().decode(hostResult.payload), '{"enabled":true,"retries":3}');
+
+hostResult = decodeHostResult(await environmentBindings.picorbWorkerEnvGetBridge("SECRET_VALUE"));
+assert.equal(hostResult.kind, HostResultKind.ok);
+assert.equal(new TextDecoder().decode(hostResult.payload), "not-logged");
+
+hostResult = decodeHostResult(await environmentBindings.picorbWorkerEnvGetBridge("KV_BINDING"));
+assert.equal(hostResult.kind, HostResultKind.missing);
+
+hostResult = decodeHostResult(await environmentBindings.picorbWorkerEnvGetBridge("MISSING_VALUE"));
+assert.equal(hostResult.kind, HostResultKind.missing);
+
+const invalidEnvironmentFrame = await environmentBindings.picorbWorkerEnvGetBridge("");
+assert.equal(decodeHostResult(invalidEnvironmentFrame).kind, HostResultKind.error);
+assert.match(hostErrorMessage(invalidEnvironmentFrame), /Environment variable name must be a non-empty string/);
+
+hostResult = decodeHostResult(await environmentBindings.picorbWorkerEnvBindingTypeBridge("KV_BINDING"));
+assert.equal(hostResult.kind, HostResultKind.ok);
+assert.equal(new TextDecoder().decode(hostResult.payload), "kv");
+
+const sentQueueMessages = [];
+const queueBindings = createCloudflareQueueBindings({
+  QUEUE_FOO: {
+    async send(body, options) {
+      sentQueueMessages.push([body, options]);
+    },
+  },
+});
+hostResult = decodeHostResult(
+  await queueBindings.picorbWorkerQueueSendBridge("QUEUE_FOO", new TextEncoder().encode("direct-message")),
+);
+assert.equal(hostResult.kind, HostResultKind.ok);
+assert.deepEqual(sentQueueMessages, [["direct-message", { contentType: "text" }]]);
+
+const missingQueueFrame = await queueBindings.picorbWorkerQueueSendBridge(
+  "MISSING_QUEUE",
+  new TextEncoder().encode("message"),
+);
+assert.equal(decodeHostResult(missingQueueFrame).kind, HostResultKind.error);
+assert.match(hostErrorMessage(missingQueueFrame), /Queue binding MISSING_QUEUE is not configured/);
+
 const kvRuntime = await createRuntime(createPicoRuby, wasmModule, kvAppBytecode, kvBindings);
 
 const missingKvResponse = await dispatch(
@@ -245,5 +363,149 @@ assert.deepEqual(
 );
 
 await closeRuntime(kvRuntime);
+
+const namedKvStore = new Map();
+const namedKvOptions = new Map();
+const runtimeQueueMessages = [];
+const runtimeWorkerEnv = {
+  TEXT_VALUE: "worker-value",
+  JSON_VALUE: { retries: 3 },
+  SECRET_VALUE: "secret-value",
+  KV_BINDING: { get() {}, put() {} },
+  SECOND_KV: {
+    async get(key, type) {
+      assert.equal(type, "arrayBuffer");
+      if (key === "reject") throw new Error("KV backend rejected the read");
+      const value = namedKvStore.get(key);
+      return value === undefined ? null : value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+    },
+    async put(key, value, options) {
+      if (key === "reject") throw new Error("KV backend rejected the write");
+      namedKvStore.set(key, new Uint8Array(value));
+      namedKvOptions.set(key, options);
+    },
+  },
+  QUEUE_FOO: {
+    async send(body, options) {
+      if (body === "reject") throw new Error("Queue backend rejected the message");
+      runtimeQueueMessages.push([body, options]);
+    },
+  },
+};
+runtimeWorkerEnv.PICORUBY_KV = runtimeWorkerEnv.SECOND_KV;
+const bindingsRuntime = await createRuntime(
+  createPicoRuby,
+  wasmModule,
+  bindingsAppBytecode,
+  mergeBindings(
+    createCloudflareKvBindings(runtimeWorkerEnv),
+    createEnvironmentBindings(runtimeWorkerEnv),
+    createCloudflareQueueBindings(runtimeWorkerEnv),
+  ),
+);
+
+const environmentResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/env"),
+);
+assert.equal(
+  await environmentResponse.text(),
+  'worker-value|{"retries":3}|secret-value|present|missing',
+);
+
+const cloudflareEnvironmentResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/cloudflare/env"),
+);
+assert.equal(
+  await cloudflareEnvironmentResponse.text(),
+  'worker-value|{"retries":3}|Cloudflare::KV|Cloudflare::Queue',
+);
+
+const namedSetResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/kv/named/set"),
+);
+assert.equal(await namedSetResponse.text(), "named-set");
+assert.equal(new TextDecoder().decode(namedKvStore.get("named-key")), "named-value");
+assert.deepEqual(namedKvOptions.get("named-key"), {});
+
+const ttlResponse = await dispatch(bindingsRuntime, new Request("https://example.com/kv/ttl"));
+assert.equal(await ttlResponse.text(), "ttl-set");
+for (const [key, ttl] of [
+  ["ttl-direct", 60], ["ttl-from-env", 120], ["ttl-class-put", 180],
+  ["ttl-class-set", 240], ["ttl-module-set", 300],
+]) {
+  assert.deepEqual(namedKvOptions.get(key), { expirationTtl: ttl });
+  assert.deepEqual(namedKvStore.get(key), new Uint8Array([0, 255]), "TTL writes remain binary-safe");
+}
+assert.deepEqual(namedKvOptions.get("ttl-nil"), {});
+
+const invalidTtlResponse = await dispatch(bindingsRuntime, new Request("https://example.com/kv/ttl/invalid"));
+assert.match(await invalidTtlResponse.text(), /host-error=Cloudflare KV ttl must be an integer of at least 60 seconds/);
+assert.equal(namedKvStore.has("ttl-invalid"), false);
+
+const rejectedPutResponse = await dispatch(bindingsRuntime, new Request("https://example.com/kv/put-rejected"));
+assert.match(await rejectedPutResponse.text(), /host-error=KV backend rejected the write/);
+
+const namedGetResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/kv/named/get"),
+);
+assert.equal(await namedGetResponse.text(), "named-value");
+
+const kvAliasResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/kv/from-env-alias"),
+);
+assert.equal(await kvAliasResponse.text(), "same");
+
+const missingBindingResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/kv/missing-binding"),
+);
+assert.match(await missingBindingResponse.text(), /host-error=Cloudflare KV binding MISSING_KV is not configured/);
+
+const rejectedKvResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/kv/rejected"),
+);
+assert.match(await rejectedKvResponse.text(), /host-error=KV backend rejected the read/);
+
+const queueSendResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/queue/send"),
+);
+assert.equal(await queueSendResponse.text(), "queue-sent");
+
+const queueFromEnvResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/queue/from-env"),
+);
+assert.equal(await queueFromEnvResponse.text(), "queue-sent-from-env");
+assert.deepEqual(runtimeQueueMessages, [
+  ["queue-message", { contentType: "text" }],
+  ["from-env-message", { contentType: "text" }],
+]);
+
+const rejectedQueueResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/queue/rejected"),
+);
+assert.match(await rejectedQueueResponse.text(), /host-error=Queue backend rejected the message/);
+
+const typeErrorResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/binding/type-error"),
+);
+assert.match(await typeErrorResponse.text(), /argument-error=Cloudflare binding `QUEUE_FOO' is not a Cloudflare::KV/);
+
+const missingBindingMethodResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/binding/missing"),
+);
+assert.equal(await missingBindingMethodResponse.text(), "missing=NoMethodError");
+
+await closeRuntime(bindingsRuntime);
 
 console.log("PicoRuby Rack runtime tests passed");
