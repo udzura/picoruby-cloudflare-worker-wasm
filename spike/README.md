@@ -115,8 +115,17 @@ current limits.
 
 ## Host binding factories
 
-`handleRequest` accepts any number of binding fragments. Each factory captures
-the current Worker `env` and returns only the Emscripten callbacks it owns:
+`wrangler.jsonc` is the source of truth for resource binding types. Generate
+the checked-in registry after adding or changing KV or Queue bindings:
+
+```console
+npm run generate:bindings
+```
+
+`npm run build` regenerates it, while `npm test` rejects a stale generated
+file. The registry contains names and types only; variables, secret names, and
+all values are omitted. Pass it to the unified factory, which captures the
+current Worker `env` and creates the Emscripten callbacks:
 
 ```js
 handleRequest(
@@ -124,13 +133,17 @@ handleRequest(
   picoRubyWasm,
   appBytecode,
   request,
-  createCloudflareKvBindings(env),
-  createCloudflareQueueBindings(env),
-  createEnvironmentBindings(env),
+  createCloudflareBindings(env, cloudflareBindingTypes),
 );
 ```
 
-Callback names use the `picorbWorker` prefix. Duplicate names are rejected, so
+For an environment-specific Wrangler section, the generator also accepts
+`--env NAME`. Resource binding sections are not inherited from the top-level
+configuration, matching Wrangler's environment model.
+
+The runtime does not infer a resource type from methods such as `get` and
+`put`; unregistered resources are rejected. Callback names use the
+`picorbWorker` prefix. Duplicate names are rejected, so
 a later binding cannot silently replace an existing host operation. HTTP body
 limits remain `dispatch` request options and are not binding callbacks.
 

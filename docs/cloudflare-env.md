@@ -19,8 +19,11 @@ Inspecting the proxy, including as part of the complete Rack environment,
 never displays resolved values. This prevents variables and secrets from being
 included accidentally in diagnostics through `Cloudflare::Environment#inspect`.
 
-KV and Queue resources are detected by their host APIs. Scalar text, JSON, and
-secret values are returned as Strings; JSON values use compact JSON encoding.
+KV and Queue resources are identified by the generated binding-type registry,
+whose source is `wrangler.jsonc`. The runtime does not infer types from object
+methods, so unsupported resources cannot be mistaken for KV. Scalar text,
+JSON, and secret values are returned as Strings; JSON values use compact JSON
+encoding.
 
 Worker variables and secrets are exposed through the ordinary PicoRuby `ENV`
 object as a special direct bypass:

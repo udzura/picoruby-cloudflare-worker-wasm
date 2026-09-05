@@ -1,10 +1,9 @@
 import createPicoRuby from "../dist/picoruby-worker.js";
 import picoRubyWasm from "../dist/picoruby-worker.wasm";
 import appBytecode from "../dist/app.bin";
+import { cloudflareBindingTypes } from "./generated/cloudflare-bindings.js";
 import {
-  createCloudflareKvBindings,
-  createCloudflareQueueBindings,
-  createEnvironmentBindings,
+  createCloudflareBindings,
   handleRequest,
   RequestBodyTooLargeError,
 } from "./runtime.js";
@@ -17,9 +16,7 @@ export default {
         picoRubyWasm,
         appBytecode,
         request,
-        createCloudflareKvBindings(env),
-        createCloudflareQueueBindings(env),
-        createEnvironmentBindings(env),
+        createCloudflareBindings(env, cloudflareBindingTypes),
       );
     } catch (error) {
       console.error(error);

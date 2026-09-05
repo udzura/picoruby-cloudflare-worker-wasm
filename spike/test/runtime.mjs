@@ -4,6 +4,7 @@ import fs from "node:fs";
 import createPicoRuby from "../dist/picoruby-worker.js";
 import {
   closeRuntime,
+  createCloudflareBindings,
   createCloudflareKvBindings,
   createCloudflareQueueBindings,
   createEnvironmentBindings,
@@ -227,7 +228,7 @@ const kvBindings = createCloudflareKvBindings({
       kvStore.set(key, new Uint8Array(value));
     },
   },
-});
+}, { PICORUBY_KV: "kv" });
 const genericKvStore = new Map();
 const genericKvOptions = new Map();
 const genericKvBindings = createCloudflareKvBindings({
@@ -242,7 +243,7 @@ const genericKvBindings = createCloudflareKvBindings({
       genericKvOptions.set(key, options);
     },
   },
-});
+}, { FIRST_KV: "kv" });
 const genericValue = new Uint8Array([0, 1, 2, 255]);
 let hostResult = decodeHostResult(
   await genericKvBindings.picorbWorkerKvPutBridge("FIRST_KV", "binary", genericValue),
@@ -283,14 +284,14 @@ assert.equal(hostResult.kind, HostResultKind.missing);
 const missingBindingFrame = await genericKvBindings.picorbWorkerKvGetBridge("MISSING_KV", "key");
 hostResult = decodeHostResult(missingBindingFrame);
 assert.equal(hostResult.kind, HostResultKind.error);
-assert.match(hostErrorMessage(missingBindingFrame), /KV binding MISSING_KV is not configured/);
+assert.match(hostErrorMessage(missingBindingFrame), /Cloudflare binding MISSING_KV is not registered/);
 
 const environmentBindings = createEnvironmentBindings({
   TEXT_VALUE: "value",
   JSON_VALUE: { enabled: true, retries: 3 },
   SECRET_VALUE: "not-logged",
   KV_BINDING: { get() {}, put() {} },
-});
+}, { KV_BINDING: "kv" });
 hostResult = decodeHostResult(await environmentBindings.picorbWorkerEnvGetBridge("TEXT_VALUE"));
 assert.equal(hostResult.kind, HostResultKind.ok);
 assert.equal(new TextDecoder().decode(hostResult.payload), "value");
@@ -324,7 +325,7 @@ const queueBindings = createCloudflareQueueBindings({
       sentQueueMessages.push([body, options]);
     },
   },
-});
+}, { QUEUE_FOO: "queue" });
 hostResult = decodeHostResult(
   await queueBindings.picorbWorkerQueueSendBridge("QUEUE_FOO", new TextEncoder().encode("direct-message")),
 );
@@ -336,7 +337,7 @@ const missingQueueFrame = await queueBindings.picorbWorkerQueueSendBridge(
   new TextEncoder().encode("message"),
 );
 assert.equal(decodeHostResult(missingQueueFrame).kind, HostResultKind.error);
-assert.match(hostErrorMessage(missingQueueFrame), /Queue binding MISSING_QUEUE is not configured/);
+assert.match(hostErrorMessage(missingQueueFrame), /Cloudflare binding MISSING_QUEUE is not registered/);
 
 const kvRuntime = await createRuntime(createPicoRuby, wasmModule, kvAppBytecode, kvBindings);
 
@@ -372,6 +373,7 @@ const runtimeWorkerEnv = {
   JSON_VALUE: { retries: 3 },
   SECRET_VALUE: "secret-value",
   KV_BINDING: { get() {}, put() {} },
+  BUCKET: { get() {}, put() {}, head() {}, list() {} },
   SECOND_KV: {
     async get(key, type) {
       assert.equal(type, "arrayBuffer");
@@ -397,11 +399,12 @@ const bindingsRuntime = await createRuntime(
   createPicoRuby,
   wasmModule,
   bindingsAppBytecode,
-  mergeBindings(
-    createCloudflareKvBindings(runtimeWorkerEnv),
-    createEnvironmentBindings(runtimeWorkerEnv),
-    createCloudflareQueueBindings(runtimeWorkerEnv),
-  ),
+  createCloudflareBindings(runtimeWorkerEnv, {
+    KV_BINDING: "kv",
+    PICORUBY_KV: "kv",
+    QUEUE_FOO: "queue",
+    SECOND_KV: "kv",
+  }),
 );
 
 const environmentResponse = await dispatch(
@@ -497,7 +500,7 @@ const missingBindingResponse = await dispatch(
   bindingsRuntime,
   new Request("https://example.com/kv/missing-binding"),
 );
-assert.match(await missingBindingResponse.text(), /host-error=Cloudflare KV binding MISSING_KV is not configured/);
+assert.match(await missingBindingResponse.text(), /host-error=Cloudflare binding MISSING_KV is not registered/);
 
 const rejectedKvResponse = await dispatch(
   bindingsRuntime,
@@ -532,6 +535,21 @@ const typeErrorResponse = await dispatch(
   new Request("https://example.com/binding/type-error"),
 );
 assert.match(await typeErrorResponse.text(), /argument-error=Cloudflare binding `QUEUE_FOO' is not a Cloudflare::KV/);
+
+const unsupportedResourceResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/binding/unsupported-resource"),
+);
+assert.equal(await unsupportedResourceResponse.text(), "missing=NoMethodError");
+
+const unsupportedResourceAsKvResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/binding/unsupported-resource-as-kv"),
+);
+assert.match(
+  await unsupportedResourceAsKvResponse.text(),
+  /host-error=Cloudflare binding BUCKET is not registered/,
+);
 
 const missingBindingMethodResponse = await dispatch(
   bindingsRuntime,

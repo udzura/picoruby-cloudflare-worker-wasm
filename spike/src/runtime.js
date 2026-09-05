@@ -77,15 +77,16 @@ export function mergeBindings(...bindingSets) {
   return bindings;
 }
 
-export function createCloudflareKvBindings(env) {
+export function createCloudflareKvBindings(env, bindingTypes = {}) {
+  const types = normalizeBindingTypes(bindingTypes);
   const get = async (bindingName, key) => {
-    const namespace = getKvNamespace(env, bindingName);
+    const namespace = getKvNamespace(env, types, bindingName);
     const value = await namespace.get(decodeKvKey(key), "arrayBuffer");
     return value === null ? null : new Uint8Array(value);
   };
 
   const put = async (bindingName, key, value, options = {}) => {
-    const namespace = getKvNamespace(env, bindingName);
+    const namespace = getKvNamespace(env, types, bindingName);
     const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
     await namespace.put(decodeKvKey(key), bytes.buffer, options);
   };
@@ -144,11 +145,12 @@ function parseKvPutOptions(optionsJson) {
   return { expirationTtl: options.ttl };
 }
 
-export function createCloudflareQueueBindings(env) {
+export function createCloudflareQueueBindings(env, bindingTypes = {}) {
+  const types = normalizeBindingTypes(bindingTypes);
   return {
     picorbWorkerQueueSendBridge: async (bindingName, message) => {
       return await captureHostCall(async () => {
-        const queue = getQueue(env, bindingName);
+        const queue = getQueue(env, types, bindingName);
         const body = strictDecoder.decode(message);
         await queue.send(body, { contentType: "text" });
         return hostOk(new Uint8Array());
@@ -157,11 +159,12 @@ export function createCloudflareQueueBindings(env) {
   };
 }
 
-function getKvNamespace(env, bindingName) {
+function getKvNamespace(env, bindingTypes, bindingName) {
   if (typeof bindingName !== "string" || bindingName.length === 0) {
     throw new TypeError("Cloudflare KV binding name must be a non-empty string");
   }
 
+  requireBindingType(bindingTypes, bindingName, "kv");
   const namespace = env[bindingName];
   if (!namespace || typeof namespace.get !== "function" || typeof namespace.put !== "function") {
     throw new Error(`Cloudflare KV binding ${bindingName} is not configured`);
@@ -169,11 +172,12 @@ function getKvNamespace(env, bindingName) {
   return namespace;
 }
 
-function getQueue(env, bindingName) {
+function getQueue(env, bindingTypes, bindingName) {
   if (typeof bindingName !== "string" || bindingName.length === 0) {
     throw new TypeError("Cloudflare Queue binding name must be a non-empty string");
   }
 
+  requireBindingType(bindingTypes, bindingName, "queue");
   const queue = env[bindingName];
   if (!queue || typeof queue.send !== "function") {
     throw new Error(`Cloudflare Queue binding ${bindingName} is not configured`);
@@ -209,19 +213,16 @@ function readEnvironmentValue(env, key) {
   return null;
 }
 
-function readBindingType(env, key) {
+function readBindingType(env, bindingTypes, key) {
   if (typeof key !== "string" || key.length === 0) {
     throw new TypeError("Cloudflare binding name must be a non-empty string");
   }
 
-  const value = env[key];
-  if (!value || typeof value !== "object") return null;
-  if (typeof value.get === "function" && typeof value.put === "function") return "kv";
-  if (typeof value.send === "function") return "queue";
-  return null;
+  return env[key] === undefined ? null : bindingTypes[key] ?? null;
 }
 
-export function createEnvironmentBindings(env) {
+export function createEnvironmentBindings(env, bindingTypes = {}) {
+  const types = normalizeBindingTypes(bindingTypes);
   return {
     picorbWorkerEnvGetBridge: (key) => {
       return captureHostCallSync(() => {
@@ -231,11 +232,46 @@ export function createEnvironmentBindings(env) {
     },
     picorbWorkerEnvBindingTypeBridge: (key) => {
       return captureHostCallSync(() => {
-        const type = readBindingType(env, key);
+        const type = readBindingType(env, types, key);
         return type === null ? hostMissing() : hostOk(utf8(type));
       });
     },
   };
+}
+
+export function createCloudflareBindings(env, bindingTypes) {
+  const types = normalizeBindingTypes(bindingTypes);
+  return mergeBindings(
+    createCloudflareKvBindings(env, types),
+    createCloudflareQueueBindings(env, types),
+    createEnvironmentBindings(env, types),
+  );
+}
+
+function normalizeBindingTypes(bindingTypes) {
+  if (!bindingTypes || typeof bindingTypes !== "object" || Array.isArray(bindingTypes)) {
+    throw new TypeError("Cloudflare binding types must be an object");
+  }
+  const normalized = Object.create(null);
+  for (const [name, type] of Object.entries(bindingTypes)) {
+    if (typeof name !== "string" || name.length === 0) {
+      throw new TypeError("Cloudflare binding type contains an invalid name");
+    }
+    if (type !== "kv" && type !== "queue") {
+      throw new TypeError(`Unsupported Cloudflare binding type for ${name}: ${type}`);
+    }
+    normalized[name] = type;
+  }
+  return normalized;
+}
+
+function requireBindingType(bindingTypes, bindingName, expectedType) {
+  const actualType = bindingTypes[bindingName];
+  if (actualType === expectedType) return;
+  if (actualType === undefined) {
+    throw new Error(`Cloudflare binding ${bindingName} is not registered`);
+  }
+  throw new Error(`Cloudflare binding ${bindingName} is registered as ${actualType}, not ${expectedType}`);
 }
 
 class FrameWriter {

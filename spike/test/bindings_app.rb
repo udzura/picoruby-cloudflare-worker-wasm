@@ -94,6 +94,18 @@ class BindingsApp
       rescue ArgumentError => error
         [200, { "content-type" => "text/plain; charset=utf-8" }, ["argument-error=#{error.message}"]]
       end
+    when "/binding/unsupported-resource"
+      begin
+        Cloudflare::KV.from_env(env, "BUCKET")
+      rescue NoMethodError => error
+        [200, { "content-type" => "text/plain" }, ["missing=#{error.class}"]]
+      end
+    when "/binding/unsupported-resource-as-kv"
+      begin
+        Cloudflare::KV.new("BUCKET").get("key")
+      rescue Cloudflare::HostError => error
+        [200, { "content-type" => "text/plain" }, ["host-error=#{error.message}"]]
+      end
     when "/binding/missing"
       begin
         env["cloudflare.env"].MISSING_BINDING
