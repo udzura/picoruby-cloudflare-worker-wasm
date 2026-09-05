@@ -15,6 +15,10 @@ class BindingsApp
       [200, { "content-type" => "text/plain; charset=utf-8" }, [
         "#{cloudflare.TEXT_VALUE}|#{cloudflare.JSON_VALUE}|#{cloudflare.SECOND_KV.class}|#{cloudflare.QUEUE_FOO.class}",
       ]]
+    when "/cloudflare/env/inspect"
+      cloudflare = env["cloudflare.env"]
+      cloudflare.SECRET_VALUE
+      [200, { "content-type" => "text/plain" }, ["#{cloudflare.inspect}\n#{env.inspect}"]]
     when "/kv/named/set"
       env["cloudflare.env"].SECOND_KV.put("named-key", "named-value")
       [200, { "content-type" => "text/plain; charset=utf-8" }, ["named-set"]]

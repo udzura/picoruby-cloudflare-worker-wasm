@@ -15,6 +15,10 @@ object. The JavaScript callbacks close over the original Worker `env`, and the
 proxy caches resolved Ruby wrappers for the duration of the Rack request. An
 unknown or unsupported property raises `NoMethodError`.
 
+Inspecting the proxy, including as part of the complete Rack environment,
+never displays resolved values. This prevents variables and secrets from being
+included accidentally in diagnostics through `Cloudflare::Environment#inspect`.
+
 KV and Queue resources are detected by their host APIs. Scalar text, JSON, and
 secret values are returned as Strings; JSON values use compact JSON encoding.
 

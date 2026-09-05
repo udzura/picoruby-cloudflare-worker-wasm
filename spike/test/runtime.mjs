@@ -422,6 +422,15 @@ assert.equal(
   'worker-value|{"retries":3}|Cloudflare::KV|Cloudflare::Queue',
 );
 
+const cloudflareEnvironmentInspectResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/cloudflare/env/inspect"),
+);
+const cloudflareEnvironmentInspect = await cloudflareEnvironmentInspectResponse.text();
+assert.match(cloudflareEnvironmentInspect, /^#<Cloudflare::Environment>\n/);
+assert.doesNotMatch(cloudflareEnvironmentInspect, /secret-value/);
+assert.doesNotMatch(cloudflareEnvironmentInspect, /@bindings/);
+
 const namedSetResponse = await dispatch(
   bindingsRuntime,
   new Request("https://example.com/kv/named/set"),

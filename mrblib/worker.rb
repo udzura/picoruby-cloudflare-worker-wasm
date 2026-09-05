@@ -504,6 +504,10 @@ module Cloudflare
       binding(name)
     end
 
+    def inspect
+      "#<Cloudflare::Environment>"
+    end
+
     def self.from_rack(rack_env)
       environment = rack_env["cloudflare.env"]
       return environment if environment.is_a?(self)
