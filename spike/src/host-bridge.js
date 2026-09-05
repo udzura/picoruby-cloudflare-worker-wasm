@@ -6,12 +6,36 @@ export const HostResultKind = Object.freeze({
   ok: 0,
   missing: 1,
   error: 2,
+  bindingError: 3,
+  argumentError: 4,
+  protocolError: 5,
 });
 
 export class HostBridgeError extends Error {
   constructor(message) {
     super(message);
     this.name = "HostBridgeError";
+  }
+}
+
+export class HostBindingError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "HostBindingError";
+  }
+}
+
+export class HostArgumentError extends TypeError {
+  constructor(message) {
+    super(message);
+    this.name = "HostArgumentError";
+  }
+}
+
+export class HostProtocolError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "HostProtocolError";
   }
 }
 
@@ -30,7 +54,7 @@ function readU32(bytes, offset) {
 }
 
 export function encodeHostResult(kind, payload = new Uint8Array()) {
-  if (!Number.isInteger(kind) || kind < HostResultKind.ok || kind > HostResultKind.error) {
+  if (!Number.isInteger(kind) || kind < HostResultKind.ok || kind > HostResultKind.protocolError) {
     throw new TypeError("Invalid host bridge result kind");
   }
 
@@ -55,7 +79,7 @@ export function decodeHostResult(frame) {
 
   const kind = readU32(bytes, 4);
   const length = readU32(bytes, 8);
-  if (kind > HostResultKind.error || length !== bytes.byteLength - 12) {
+  if (kind > HostResultKind.protocolError || length !== bytes.byteLength - 12) {
     throw new HostBridgeError("Invalid PicoRuby host bridge result");
   }
   return { kind, payload: bytes.slice(12) };
@@ -79,14 +103,22 @@ export function captureHostCallSync(operation) {
 
 function encodeOperationResult(result) {
   if (!result || typeof result !== "object") {
-    throw new TypeError("Host bridge operation must return a result object");
+    throw new HostProtocolError("Host bridge operation must return a result object");
   }
-  return encodeHostResult(result.kind, result.payload);
+  try {
+    return encodeHostResult(result.kind, result.payload);
+  } catch (error) {
+    throw new HostProtocolError(error instanceof Error ? error.message : String(error));
+  }
 }
 
 function encodeHostError(error) {
   const message = error instanceof Error ? error.message : String(error);
-  return encodeHostResult(HostResultKind.error, encoder.encode(message));
+  let kind = HostResultKind.error;
+  if (error instanceof HostBindingError) kind = HostResultKind.bindingError;
+  if (error instanceof HostArgumentError) kind = HostResultKind.argumentError;
+  if (error instanceof HostProtocolError) kind = HostResultKind.protocolError;
+  return encodeHostResult(kind, encoder.encode(message));
 }
 
 export function hostOk(payload) {
@@ -99,7 +131,7 @@ export function hostMissing() {
 
 export function hostErrorMessage(frame) {
   const result = decodeHostResult(frame);
-  return result.kind === HostResultKind.error ? decoder.decode(result.payload) : null;
+  return result.kind >= HostResultKind.error ? decoder.decode(result.payload) : null;
 }
 
 export function utf8(value) {

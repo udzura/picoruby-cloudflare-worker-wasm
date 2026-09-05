@@ -75,6 +75,20 @@ Resource bindings (KV, Queues, D1, service bindings, and similar objects) are
 not `ENV` values and return `nil` from that interface. Access supported
 resources through `env["cloudflare.env"]` instead.
 
-An invalid key raises `ArgumentError`; a host bridge failure raises
-`Cloudflare::HostError`. ENV lookups themselves are synchronous: Worker `env`
-is already present for the request, so this path does not suspend through JSPI.
+An invalid key raises `ArgumentError`. ENV lookups themselves are synchronous:
+Worker `env` is already present for the request, so this path does not suspend
+through JSPI.
+
+Cloudflare integration errors share this hierarchy:
+
+```ruby
+Cloudflare::Error < StandardError
+Cloudflare::BindingError < Cloudflare::Error  # missing or wrong binding type
+Cloudflare::HostError < Cloudflare::Error     # host operation failed
+Cloudflare::ProtocolError < Cloudflare::Error # malformed bridge data
+```
+
+Ruby argument and type mistakes continue to use core `ArgumentError` or
+`TypeError`. Missing property syntax such as `cloudflare.UNKNOWN` raises
+`NoMethodError`, while explicit resource resolution through `from_env` raises
+`Cloudflare::BindingError` when the requested binding cannot be resolved.

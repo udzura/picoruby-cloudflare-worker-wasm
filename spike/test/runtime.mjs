@@ -15,10 +15,16 @@ import {
   RequestBodyTooLargeError,
 } from "../src/runtime.js";
 import {
+  captureHostCall,
   decodeHostResult,
   HostResultKind,
   hostErrorMessage,
 } from "../src/host-bridge.js";
+
+let invalidOperationResult = decodeHostResult(await captureHostCall(async () => null));
+assert.equal(invalidOperationResult.kind, HostResultKind.protocolError);
+invalidOperationResult = decodeHostResult(await captureHostCall(async () => ({ kind: 99 })));
+assert.equal(invalidOperationResult.kind, HostResultKind.protocolError);
 
 const wasmModule = new WebAssembly.Module(
   fs.readFileSync(new URL("../dist/picoruby-worker.wasm", import.meta.url)),
@@ -260,13 +266,18 @@ assert.deepEqual(genericKvOptions.get("ttl"), { expirationTtl: 60 });
 assert.deepEqual(genericKvStore.get("ttl"), genericValue);
 
 for (const optionsJson of [
-  "", "{", "null", "[]", "true", "60",
+  "null", "[]", "true", "60",
   '{"ttl":59}', '{"ttl":0}', '{"ttl":-1}', '{"ttl":60.5}',
   '{"ttl":"60"}', '{"ttl":false}', '{"ttl":null}',
   '{"ttl":9007199254740992}', '{"ttl":1e309}', '{"unknown":60}',
 ]) {
   const frame = await genericKvBindings.picorbWorkerKvPutBridge("FIRST_KV", "invalid", genericValue, optionsJson);
-  assert.equal(decodeHostResult(frame).kind, HostResultKind.error, optionsJson);
+  assert.equal(decodeHostResult(frame).kind, HostResultKind.argumentError, optionsJson);
+  assert.equal(genericKvStore.has("invalid"), false, "invalid options must not write KV");
+}
+for (const optionsJson of ["", "{"]) {
+  const frame = await genericKvBindings.picorbWorkerKvPutBridge("FIRST_KV", "invalid", genericValue, optionsJson);
+  assert.equal(decodeHostResult(frame).kind, HostResultKind.protocolError, optionsJson);
   assert.equal(genericKvStore.has("invalid"), false, "invalid options must not write KV");
 }
 
@@ -283,7 +294,7 @@ assert.equal(hostResult.kind, HostResultKind.missing);
 
 const missingBindingFrame = await genericKvBindings.picorbWorkerKvGetBridge("MISSING_KV", "key");
 hostResult = decodeHostResult(missingBindingFrame);
-assert.equal(hostResult.kind, HostResultKind.error);
+assert.equal(hostResult.kind, HostResultKind.bindingError);
 assert.match(hostErrorMessage(missingBindingFrame), /Cloudflare binding MISSING_KV is not registered/);
 
 const environmentBindings = createEnvironmentBindings({
@@ -321,7 +332,7 @@ hostResult = decodeHostResult(await environmentBindings.picorbWorkerEnvGetBridge
 assert.equal(hostResult.kind, HostResultKind.missing);
 
 const invalidEnvironmentFrame = await environmentBindings.picorbWorkerEnvGetBridge("");
-assert.equal(decodeHostResult(invalidEnvironmentFrame).kind, HostResultKind.error);
+assert.equal(decodeHostResult(invalidEnvironmentFrame).kind, HostResultKind.argumentError);
 assert.match(hostErrorMessage(invalidEnvironmentFrame), /Environment variable name must be a non-empty string/);
 
 hostResult = decodeHostResult(await environmentBindings.picorbWorkerEnvBindingTypeBridge("KV_BINDING"));
@@ -342,11 +353,18 @@ hostResult = decodeHostResult(
 assert.equal(hostResult.kind, HostResultKind.ok);
 assert.deepEqual(sentQueueMessages, [["direct-message", { contentType: "text" }]]);
 
+const invalidQueueMessageFrame = await queueBindings.picorbWorkerQueueSendBridge(
+  "QUEUE_FOO",
+  new Uint8Array([0xff]),
+);
+assert.equal(decodeHostResult(invalidQueueMessageFrame).kind, HostResultKind.argumentError);
+assert.match(hostErrorMessage(invalidQueueMessageFrame), /Cloudflare Queue message must be valid UTF-8/);
+
 const missingQueueFrame = await queueBindings.picorbWorkerQueueSendBridge(
   "MISSING_QUEUE",
   new TextEncoder().encode("message"),
 );
-assert.equal(decodeHostResult(missingQueueFrame).kind, HostResultKind.error);
+assert.equal(decodeHostResult(missingQueueFrame).kind, HostResultKind.bindingError);
 assert.match(hostErrorMessage(missingQueueFrame), /Cloudflare binding MISSING_QUEUE is not registered/);
 
 const kvRuntime = await createRuntime(createPicoRuby, wasmModule, kvAppBytecode, kvBindings);
@@ -531,7 +549,7 @@ for (const [key, ttl] of [
 assert.deepEqual(namedKvOptions.get("ttl-nil"), {});
 
 const invalidTtlResponse = await dispatch(bindingsRuntime, new Request("https://example.com/kv/ttl/invalid"));
-assert.match(await invalidTtlResponse.text(), /host-error=Cloudflare KV ttl must be an integer of at least 60 seconds/);
+assert.match(await invalidTtlResponse.text(), /argument-error=Cloudflare KV ttl must be a safe integer of at least 60 seconds/);
 assert.equal(namedKvStore.has("ttl-invalid"), false);
 
 const rejectedPutResponse = await dispatch(bindingsRuntime, new Request("https://example.com/kv/put-rejected"));
@@ -563,7 +581,7 @@ const invalidUtf8KeyResponse = await dispatch(
 );
 assert.equal(
   await invalidUtf8KeyResponse.text(),
-  "host-error=Cloudflare KV key must be valid UTF-8",
+  "argument-error=Cloudflare KV key must be valid UTF-8",
 );
 assert.equal(namedKvStore.has("�"), false, "an invalid UTF-8 key must not be replaced and written");
 
@@ -577,7 +595,7 @@ const missingBindingResponse = await dispatch(
   bindingsRuntime,
   new Request("https://example.com/kv/missing-binding"),
 );
-assert.match(await missingBindingResponse.text(), /host-error=Cloudflare binding MISSING_KV is not registered/);
+assert.match(await missingBindingResponse.text(), /binding-error=Cloudflare binding MISSING_KV is not registered/);
 
 const rejectedKvResponse = await dispatch(
   bindingsRuntime,
@@ -611,13 +629,13 @@ const typeErrorResponse = await dispatch(
   bindingsRuntime,
   new Request("https://example.com/binding/type-error"),
 );
-assert.match(await typeErrorResponse.text(), /argument-error=Cloudflare binding `QUEUE_FOO' is not a Cloudflare::KV/);
+assert.match(await typeErrorResponse.text(), /binding-error=Cloudflare binding `QUEUE_FOO' is not a Cloudflare::KV/);
 
 const unsupportedResourceResponse = await dispatch(
   bindingsRuntime,
   new Request("https://example.com/binding/unsupported-resource"),
 );
-assert.equal(await unsupportedResourceResponse.text(), "missing=NoMethodError");
+assert.match(await unsupportedResourceResponse.text(), /binding-error=undefined Cloudflare binding `BUCKET'/);
 
 const unsupportedResourceAsKvResponse = await dispatch(
   bindingsRuntime,
@@ -625,7 +643,7 @@ const unsupportedResourceAsKvResponse = await dispatch(
 );
 assert.match(
   await unsupportedResourceAsKvResponse.text(),
-  /host-error=Cloudflare binding BUCKET is not registered/,
+  /binding-error=Cloudflare binding BUCKET is not registered/,
 );
 
 const missingBindingMethodResponse = await dispatch(
@@ -634,6 +652,37 @@ const missingBindingMethodResponse = await dispatch(
 );
 assert.equal(await missingBindingMethodResponse.text(), "missing=NoMethodError");
 
+const missingBindingFromEnvResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/binding/missing-from-env"),
+);
+assert.match(
+  await missingBindingFromEnvResponse.text(),
+  /binding-error=undefined Cloudflare binding `MISSING_KV'/,
+);
+
+const hierarchyResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/errors/hierarchy"),
+);
+assert.equal(await hierarchyResponse.text(), "[true, true, true, true]");
+
 await closeRuntime(bindingsRuntime);
+
+const malformedBridgeRuntime = await createRuntime(
+  createPicoRuby,
+  wasmModule,
+  bindingsAppBytecode,
+  { picorbWorkerKvGetBridge: async () => new Uint8Array([0]) },
+);
+const protocolErrorResponse = await dispatch(
+  malformedBridgeRuntime,
+  new Request("https://example.com/kv/protocol-error"),
+);
+assert.equal(
+  await protocolErrorResponse.text(),
+  "protocol-error=invalid Cloudflare KV host result",
+);
+await closeRuntime(malformedBridgeRuntime);
 
 console.log("PicoRuby Rack runtime tests passed");

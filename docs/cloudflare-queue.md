@@ -19,8 +19,9 @@ queue.send("event-created")
 ```
 
 `send` accepts a UTF-8 PicoRuby String, sends it with Cloudflare's `text`
-content type, and returns `nil` after the Queue Promise resolves. A missing
-Queue binding or rejected Promise raises `Cloudflare::HostError`.
+content type, and returns `nil` after the Queue Promise resolves. A missing or
+incorrectly typed Queue binding raises `Cloudflare::BindingError`; a rejected
+Promise raises `Cloudflare::HostError`.
 
 ## Wrangler configuration
 

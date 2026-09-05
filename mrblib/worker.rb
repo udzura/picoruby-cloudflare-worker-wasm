@@ -483,15 +483,21 @@ module Cloudflare
     encoded = __env_get_raw(name)
     return [false, nil] if encoded.nil?
 
-    [true, JSON.parse(encoded)]
+    [true, __parse_env_value(encoded)]
   end
 
   def self.__env_get(name)
     encoded = __env_get_raw(name)
     return nil if encoded.nil?
 
-    value = JSON.parse(encoded)
+    value = __parse_env_value(encoded)
     value.is_a?(String) ? value : encoded
+  end
+
+  def self.__parse_env_value(encoded)
+    JSON.parse(encoded)
+  rescue JSON::ParserError => error
+    raise ProtocolError, "invalid environment JSON: #{error.message}"
   end
 
   class Environment
@@ -505,11 +511,11 @@ module Cloudflare
       binding_name = Cloudflare.__normalize_binding_name(name)
       value = __resolve(binding_name)
       if value.equal?(MISSING)
-        raise NoMethodError, "undefined Cloudflare binding `#{binding_name}'"
+        raise BindingError, "undefined Cloudflare binding `#{binding_name}'"
       end
 
       if expected_class && !value.is_a?(expected_class)
-        raise ArgumentError, "Cloudflare binding `#{binding_name}' is not a #{expected_class}"
+        raise BindingError, "Cloudflare binding `#{binding_name}' is not a #{expected_class}"
       end
       value
     end
@@ -540,7 +546,11 @@ module Cloudflare
     def method_missing(name, *arguments, &block)
       return super unless arguments.empty? && block.nil?
 
-      binding(name)
+      binding_name = Cloudflare.__normalize_binding_name(name)
+      value = __resolve(binding_name)
+      return value unless value.equal?(MISSING)
+
+      raise NoMethodError, "undefined Cloudflare binding `#{binding_name}'"
     end
 
     def respond_to_missing?(name, include_private = false)
@@ -605,6 +615,9 @@ module Cloudflare
     end
 
     def put(key, value, ttl: nil)
+      if !ttl.nil? && (!ttl.is_a?(Integer) || ttl < 60 || ttl > 9_007_199_254_740_991)
+        raise ArgumentError, "Cloudflare KV ttl must be a safe integer of at least 60 seconds"
+      end
       options = {}
       options[:ttl] = ttl unless ttl.nil?
       Cloudflare.__kv_put(@binding_name, key, value, JSON.generate(options))

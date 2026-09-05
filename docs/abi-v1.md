@@ -55,6 +55,23 @@ Repeated headers are encoded as repeated name/value pairs. In particular,
 multiple `set-cookie` values remain separate through the ABI. The C boundary
 currently limits the complete response frame to 8 MiB.
 
+## Host result frame (`PHB1`)
+
+Cloudflare binding callbacks return one shared result frame to Wasm:
+
+```text
+4 bytes  magic: "PHB1"
+u32      result kind
+u32      payload length
+raw      payload bytes
+```
+
+Result kinds are `0` success, `1` missing value, `2` host operation error,
+`3` binding resolution error, `4` invalid argument, and `5` bridge protocol
+error. Error payloads contain a UTF-8 message. C validates the magic, kind,
+and exact payload length before constructing a Ruby value; malformed frames
+raise `Cloudflare::ProtocolError`.
+
 ## Versioning
 
 The JavaScript glue requires `picorb_worker_abi_version() == 1` and calls only

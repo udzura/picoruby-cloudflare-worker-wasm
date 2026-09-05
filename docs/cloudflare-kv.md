@@ -25,7 +25,7 @@ cache = Cloudflare::KV.from_env(request.env, "CACHE_KV")
 ```
 
 `Cloudflare::KV.from_env` validates that the named binding is KV. Asking for a
-Queue or scalar value raises `ArgumentError`.
+missing binding, Queue, or scalar value raises `Cloudflare::BindingError`.
 
 The earlier default API remains available for `PICORUBY_KV` compatibility:
 
@@ -55,10 +55,10 @@ cache.put("greeting", "hello", ttl: 300)
 # Also supported by set, Cloudflare::KV.put/set, and Cloudflare.kv_set.
 ```
 
-`ttl` must be an integer of at least 60 seconds, following
+`ttl` must be a JavaScript-safe integer of at least 60 seconds, following
 [Workers KV's expiration limits](https://developers.cloudflare.com/kv/api/write-key-value-pairs/#expiring-keys).
 Omitting it (or passing `nil`) writes without expiration. Invalid TTL values
-raise `Cloudflare::HostError` before the write. Options cross the Ruby-to-JS
+raise `ArgumentError` before crossing the host bridge. Options cross the Ruby-to-JS
 bridge as a JSON object (`{"ttl":300}`); JS maps `ttl` to `expirationTtl`.
 This keeps the bridge extensible without adding positional arguments for each
 future option. Only `ttl:` is currently supported.
@@ -68,8 +68,9 @@ namespace. Rack application code should normally resolve bindings through
 `env["cloudflare.env"]` or `Cloudflare::KV.from_env`.
 
 All asynchronous host calls use a shared, versioned result frame. A rejected
-KV Promise or an unavailable namespace is raised in Ruby as
-`Cloudflare::HostError`, so it can be rescued at the application boundary.
+KV Promise raises `Cloudflare::HostError`. Missing, unregistered, or incorrectly
+typed namespaces raise `Cloudflare::BindingError`; malformed bridge results
+raise `Cloudflare::ProtocolError`.
 
 ## Scope and limits
 
@@ -83,7 +84,7 @@ KV Promise or an unavailable namespace is raised in Ruby as
   fit the Worker ABI and VM memory budget. This is lower than Workers KV's
   platform maximum.
 - Namespace names must be non-empty and at most 256 bytes. An absent or
-  non-KV binding raises `Cloudflare::HostError`.
+  non-KV binding raises `Cloudflare::BindingError`.
 
 The normal spike app exposes the fixed `spike-key` sample through `/kv/set` and
 `/kv/get`. Use local development while exercising its write endpoint. For an

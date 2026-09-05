@@ -1,6 +1,9 @@
 import {
   captureHostCall,
   captureHostCallSync,
+  HostArgumentError,
+  HostBindingError,
+  HostProtocolError,
   HostResultKind,
   encodeHostResult,
   hostMissing,
@@ -34,12 +37,15 @@ async function unavailableKvSet() {
 
 async function unavailableHostBridge() {
   return await captureHostCall(async () => {
-    throw new Error("PicoRuby Worker binding is not configured");
+    throw new HostBindingError("PicoRuby Worker binding is not configured");
   });
 }
 
 function unavailableEnvironmentBridge() {
-  return encodeHostResult(HostResultKind.error, utf8("PicoRuby Worker environment binding is not configured"));
+  return encodeHostResult(
+    HostResultKind.bindingError,
+    utf8("PicoRuby Worker environment binding is not configured"),
+  );
 }
 
 const defaultRuntimeBindings = {
@@ -127,21 +133,26 @@ function decodeKvKey(key) {
   try {
     return strictDecoder.decode(key);
   } catch {
-    throw new TypeError("Cloudflare KV key must be valid UTF-8");
+    throw new HostArgumentError("Cloudflare KV key must be valid UTF-8");
   }
 }
 
 function parseKvPutOptions(optionsJson) {
-  const options = JSON.parse(optionsJson);
+  let options;
+  try {
+    options = JSON.parse(optionsJson);
+  } catch {
+    throw new HostProtocolError("Cloudflare KV put options contain invalid JSON");
+  }
   if (options === null || typeof options !== "object" || Array.isArray(options)) {
-    throw new TypeError("Cloudflare KV put options must be a JSON object");
+    throw new HostArgumentError("Cloudflare KV put options must be a JSON object");
   }
   for (const name of Object.keys(options)) {
-    if (name !== "ttl") throw new TypeError(`Unknown Cloudflare KV put option: ${name}`);
+    if (name !== "ttl") throw new HostArgumentError(`Unknown Cloudflare KV put option: ${name}`);
   }
   if (!Object.hasOwn(options, "ttl")) return {};
   if (!Number.isSafeInteger(options.ttl) || options.ttl < 60) {
-    throw new TypeError("Cloudflare KV ttl must be an integer of at least 60 seconds");
+    throw new HostArgumentError("Cloudflare KV ttl must be a safe integer of at least 60 seconds");
   }
   return { expirationTtl: options.ttl };
 }
@@ -152,7 +163,7 @@ export function createCloudflareQueueBindings(env, bindingTypes = {}) {
     picorbWorkerQueueSendBridge: async (bindingName, message) => {
       return await captureHostCall(async () => {
         const queue = getQueue(env, types, bindingName);
-        const body = strictDecoder.decode(message);
+        const body = decodeQueueMessage(message);
         await queue.send(body, { contentType: "text" });
         return hostOk(new Uint8Array());
       });
@@ -160,28 +171,36 @@ export function createCloudflareQueueBindings(env, bindingTypes = {}) {
   };
 }
 
+function decodeQueueMessage(message) {
+  try {
+    return strictDecoder.decode(message);
+  } catch {
+    throw new HostArgumentError("Cloudflare Queue message must be valid UTF-8");
+  }
+}
+
 function getKvNamespace(env, bindingTypes, bindingName) {
   if (typeof bindingName !== "string" || bindingName.length === 0) {
-    throw new TypeError("Cloudflare KV binding name must be a non-empty string");
+    throw new HostArgumentError("Cloudflare KV binding name must be a non-empty string");
   }
 
   requireBindingType(bindingTypes, bindingName, "kv");
   const namespace = env[bindingName];
   if (!namespace || typeof namespace.get !== "function" || typeof namespace.put !== "function") {
-    throw new Error(`Cloudflare KV binding ${bindingName} is not configured`);
+    throw new HostBindingError(`Cloudflare KV binding ${bindingName} is not configured`);
   }
   return namespace;
 }
 
 function getQueue(env, bindingTypes, bindingName) {
   if (typeof bindingName !== "string" || bindingName.length === 0) {
-    throw new TypeError("Cloudflare Queue binding name must be a non-empty string");
+    throw new HostArgumentError("Cloudflare Queue binding name must be a non-empty string");
   }
 
   requireBindingType(bindingTypes, bindingName, "queue");
   const queue = env[bindingName];
   if (!queue || typeof queue.send !== "function") {
-    throw new Error(`Cloudflare Queue binding ${bindingName} is not configured`);
+    throw new HostBindingError(`Cloudflare Queue binding ${bindingName} is not configured`);
   }
   return queue;
 }
@@ -203,7 +222,7 @@ function isResourceBinding(value) {
 
 function readEnvironmentValue(env, key) {
   if (typeof key !== "string" || key.length === 0) {
-    throw new TypeError("Environment variable name must be a non-empty string");
+    throw new HostArgumentError("Environment variable name must be a non-empty string");
   }
 
   const value = env[key];
@@ -216,7 +235,7 @@ function readEnvironmentValue(env, key) {
 
 function readBindingType(env, bindingTypes, key) {
   if (typeof key !== "string" || key.length === 0) {
-    throw new TypeError("Cloudflare binding name must be a non-empty string");
+    throw new HostArgumentError("Cloudflare binding name must be a non-empty string");
   }
 
   return env[key] === undefined ? null : bindingTypes[key] ?? null;
@@ -272,9 +291,9 @@ function requireBindingType(bindingTypes, bindingName, expectedType) {
   const actualType = bindingTypes[bindingName];
   if (actualType === expectedType) return;
   if (actualType === undefined) {
-    throw new Error(`Cloudflare binding ${bindingName} is not registered`);
+    throw new HostBindingError(`Cloudflare binding ${bindingName} is not registered`);
   }
-  throw new Error(`Cloudflare binding ${bindingName} is registered as ${actualType}, not ${expectedType}`);
+  throw new HostBindingError(`Cloudflare binding ${bindingName} is registered as ${actualType}, not ${expectedType}`);
 }
 
 class FrameWriter {

@@ -60,7 +60,10 @@ static picorb_worker_buffer error_buffer = { NULL, 0, 0 };
 enum picorb_worker_host_result_kind {
   PICORB_WORKER_HOST_OK = 0,
   PICORB_WORKER_HOST_MISSING = 1,
-  PICORB_WORKER_HOST_ERROR = 2
+  PICORB_WORKER_HOST_ERROR = 2,
+  PICORB_WORKER_HOST_BINDING_ERROR = 3,
+  PICORB_WORKER_HOST_ARGUMENT_ERROR = 4,
+  PICORB_WORKER_HOST_PROTOCOL_ERROR = 5
 };
 
 typedef struct picorb_worker_host_result {
@@ -183,7 +186,8 @@ decode_host_result(const uint8_t *frame, size_t frame_len, picorb_worker_host_re
 
   uint32_t kind = read_u32_le(frame + 4);
   uint32_t payload_len = read_u32_le(frame + 8);
-  if (kind > PICORB_WORKER_HOST_ERROR || payload_len != frame_len - PICORB_WORKER_HOST_RESULT_HEADER_SIZE) {
+  if (kind > PICORB_WORKER_HOST_PROTOCOL_ERROR ||
+      payload_len != frame_len - PICORB_WORKER_HOST_RESULT_HEADER_SIZE) {
     return FALSE;
   }
 
@@ -191,6 +195,37 @@ decode_host_result(const uint8_t *frame, size_t frame_len, picorb_worker_host_re
   result->payload = frame + PICORB_WORKER_HOST_RESULT_HEADER_SIZE;
   result->payload_len = payload_len;
   return TRUE;
+}
+
+static mrb_noreturn void
+raise_cloudflare_error(mrb_state *mrb, const char *class_name, const char *message)
+{
+  struct RClass *cloudflare = mrb_module_get(mrb, "Cloudflare");
+  struct RClass *error = mrb_class_get_under(mrb, cloudflare, class_name);
+  mrb_raise(mrb, error, message);
+}
+
+static mrb_noreturn void
+raise_host_result_error(mrb_state *mrb, const picorb_worker_host_result *result, uintptr_t frame_ptr)
+{
+  mrb_value message = mrb_str_new(mrb, (const char *)result->payload, result->payload_len);
+  free((void *)frame_ptr);
+  struct RClass *error;
+  switch (result->kind) {
+    case PICORB_WORKER_HOST_ARGUMENT_ERROR:
+      error = E_ARGUMENT_ERROR;
+      break;
+    case PICORB_WORKER_HOST_BINDING_ERROR:
+      error = mrb_class_get_under(mrb, mrb_module_get(mrb, "Cloudflare"), "BindingError");
+      break;
+    case PICORB_WORKER_HOST_PROTOCOL_ERROR:
+      error = mrb_class_get_under(mrb, mrb_module_get(mrb, "Cloudflare"), "ProtocolError");
+      break;
+    default:
+      error = mrb_class_get_under(mrb, mrb_module_get(mrb, "Cloudflare"), "HostError");
+      break;
+  }
+  mrb_exc_raise(mrb, mrb_exc_new_str(mrb, error, message));
 }
 
 static void
@@ -231,28 +266,24 @@ mrb_cloudflare_kv_get(mrb_state *mrb, mrb_value self)
   int status = picorb_worker_kv_get_bridge(binding, (int)binding_len, key, (int)key_len,
                                             (uintptr_t)&frame_ptr, (uintptr_t)&frame_len);
   if (status < 0) {
-    mrb_raise(mrb, E_RUNTIME_ERROR, "Cloudflare KV get failed");
+    raise_cloudflare_error(mrb, "ProtocolError", "Cloudflare KV get bridge failed");
   }
 
   picorb_worker_host_result result;
   if (!decode_host_result((const uint8_t *)frame_ptr, frame_len, &result)) {
     free((void *)frame_ptr);
-    mrb_raise(mrb, E_RUNTIME_ERROR, "invalid Cloudflare KV host result");
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare KV host result");
   }
   if (result.kind == PICORB_WORKER_HOST_MISSING) {
     free((void *)frame_ptr);
     return mrb_nil_value();
   }
-  if (result.kind == PICORB_WORKER_HOST_ERROR) {
-    mrb_value message = mrb_str_new(mrb, (const char *)result.payload, result.payload_len);
-    free((void *)frame_ptr);
-    struct RClass *cloudflare = mrb_module_get(mrb, "Cloudflare");
-    struct RClass *error = mrb_class_get_under(mrb, cloudflare, "HostError");
-    mrb_exc_raise(mrb, mrb_exc_new_str(mrb, error, message));
+  if (result.kind >= PICORB_WORKER_HOST_ERROR) {
+    raise_host_result_error(mrb, &result, frame_ptr);
   }
   if (result.payload_len > PICORB_WORKER_MAX_KV_VALUE_SIZE) {
     free((void *)frame_ptr);
-    mrb_raise(mrb, E_RUNTIME_ERROR, "Cloudflare KV value is too large");
+    raise_cloudflare_error(mrb, "ProtocolError", "Cloudflare KV host value is too large");
   }
 
   mrb_value value = mrb_str_new(mrb, (const char *)result.payload, result.payload_len);
@@ -290,24 +321,20 @@ mrb_cloudflare_kv_set(mrb_state *mrb, mrb_value self)
                                             options, (int)options_len,
                                             (uintptr_t)&frame_ptr, (uintptr_t)&frame_len);
   if (status < 0) {
-    mrb_raise(mrb, E_RUNTIME_ERROR, "Cloudflare KV put failed");
+    raise_cloudflare_error(mrb, "ProtocolError", "Cloudflare KV put bridge failed");
   }
 
   picorb_worker_host_result result;
   if (!decode_host_result((const uint8_t *)frame_ptr, frame_len, &result)) {
     free((void *)frame_ptr);
-    mrb_raise(mrb, E_RUNTIME_ERROR, "invalid Cloudflare KV host result");
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare KV host result");
   }
-  if (result.kind == PICORB_WORKER_HOST_ERROR) {
-    mrb_value message = mrb_str_new(mrb, (const char *)result.payload, result.payload_len);
-    free((void *)frame_ptr);
-    struct RClass *cloudflare = mrb_module_get(mrb, "Cloudflare");
-    struct RClass *error = mrb_class_get_under(mrb, cloudflare, "HostError");
-    mrb_exc_raise(mrb, mrb_exc_new_str(mrb, error, message));
+  if (result.kind >= PICORB_WORKER_HOST_ERROR) {
+    raise_host_result_error(mrb, &result, frame_ptr);
   }
   if (result.kind != PICORB_WORKER_HOST_OK || result.payload_len != 0) {
     free((void *)frame_ptr);
-    mrb_raise(mrb, E_RUNTIME_ERROR, "invalid Cloudflare KV put host result");
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare KV put host result");
   }
   free((void *)frame_ptr);
   return mrb_nil_value();
@@ -336,24 +363,20 @@ mrb_cloudflare_queue_send(mrb_state *mrb, mrb_value self)
                                                 (const uint8_t *)message, (int)message_len,
                                                 (uintptr_t)&frame_ptr, (uintptr_t)&frame_len);
   if (status < 0) {
-    mrb_raise(mrb, E_RUNTIME_ERROR, "Cloudflare Queue send failed");
+    raise_cloudflare_error(mrb, "ProtocolError", "Cloudflare Queue send bridge failed");
   }
 
   picorb_worker_host_result result;
   if (!decode_host_result((const uint8_t *)frame_ptr, frame_len, &result)) {
     free((void *)frame_ptr);
-    mrb_raise(mrb, E_RUNTIME_ERROR, "invalid Cloudflare Queue host result");
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare Queue host result");
   }
-  if (result.kind == PICORB_WORKER_HOST_ERROR) {
-    mrb_value error_message = mrb_str_new(mrb, (const char *)result.payload, result.payload_len);
-    free((void *)frame_ptr);
-    struct RClass *cloudflare = mrb_module_get(mrb, "Cloudflare");
-    struct RClass *error = mrb_class_get_under(mrb, cloudflare, "HostError");
-    mrb_exc_raise(mrb, mrb_exc_new_str(mrb, error, error_message));
+  if (result.kind >= PICORB_WORKER_HOST_ERROR) {
+    raise_host_result_error(mrb, &result, frame_ptr);
   }
   if (result.kind != PICORB_WORKER_HOST_OK || result.payload_len != 0) {
     free((void *)frame_ptr);
-    mrb_raise(mrb, E_RUNTIME_ERROR, "invalid Cloudflare Queue send host result");
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare Queue send host result");
   }
   free((void *)frame_ptr);
   return mrb_nil_value();
@@ -375,24 +398,20 @@ mrb_cloudflare_env_get(mrb_state *mrb, mrb_value self)
   int status = picorb_worker_env_get_bridge(key, (int)key_len, (uintptr_t)&frame_ptr,
                                              (uintptr_t)&frame_len);
   if (status < 0) {
-    mrb_raise(mrb, E_RUNTIME_ERROR, "environment lookup failed");
+    raise_cloudflare_error(mrb, "ProtocolError", "environment lookup bridge failed");
   }
 
   picorb_worker_host_result result;
   if (!decode_host_result((const uint8_t *)frame_ptr, frame_len, &result)) {
     free((void *)frame_ptr);
-    mrb_raise(mrb, E_RUNTIME_ERROR, "invalid environment host result");
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid environment host result");
   }
   if (result.kind == PICORB_WORKER_HOST_MISSING) {
     free((void *)frame_ptr);
     return mrb_nil_value();
   }
-  if (result.kind == PICORB_WORKER_HOST_ERROR) {
-    mrb_value message = mrb_str_new(mrb, (const char *)result.payload, result.payload_len);
-    free((void *)frame_ptr);
-    struct RClass *cloudflare = mrb_module_get(mrb, "Cloudflare");
-    struct RClass *error = mrb_class_get_under(mrb, cloudflare, "HostError");
-    mrb_exc_raise(mrb, mrb_exc_new_str(mrb, error, message));
+  if (result.kind >= PICORB_WORKER_HOST_ERROR) {
+    raise_host_result_error(mrb, &result, frame_ptr);
   }
 
   mrb_value value = mrb_str_new(mrb, (const char *)result.payload, result.payload_len);
@@ -425,24 +444,20 @@ mrb_cloudflare_env_binding_type(mrb_state *mrb, mrb_value self)
                                                       (uintptr_t)&frame_ptr,
                                                       (uintptr_t)&frame_len);
   if (status < 0) {
-    mrb_raise(mrb, E_RUNTIME_ERROR, "Cloudflare binding lookup failed");
+    raise_cloudflare_error(mrb, "ProtocolError", "Cloudflare binding lookup bridge failed");
   }
 
   picorb_worker_host_result result;
   if (!decode_host_result((const uint8_t *)frame_ptr, frame_len, &result)) {
     free((void *)frame_ptr);
-    mrb_raise(mrb, E_RUNTIME_ERROR, "invalid Cloudflare binding host result");
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare binding host result");
   }
   if (result.kind == PICORB_WORKER_HOST_MISSING) {
     free((void *)frame_ptr);
     return mrb_nil_value();
   }
-  if (result.kind == PICORB_WORKER_HOST_ERROR) {
-    mrb_value error_message = mrb_str_new(mrb, (const char *)result.payload, result.payload_len);
-    free((void *)frame_ptr);
-    struct RClass *cloudflare = mrb_module_get(mrb, "Cloudflare");
-    struct RClass *error = mrb_class_get_under(mrb, cloudflare, "HostError");
-    mrb_exc_raise(mrb, mrb_exc_new_str(mrb, error, error_message));
+  if (result.kind >= PICORB_WORKER_HOST_ERROR) {
+    raise_host_result_error(mrb, &result, frame_ptr);
   }
 
   mrb_value value = mrb_str_new(mrb, (const char *)result.payload, result.payload_len);
@@ -784,7 +799,10 @@ mrb_picoruby_worker_wasm_gem_init(mrb_state *mrb)
   mrb_define_class_method_id(mrb, jspi_probe, MRB_SYM(add), mrb_jspi_probe_add, MRB_ARGS_REQ(2));
 
   struct RClass *cloudflare = mrb_define_module(mrb, "Cloudflare");
-  mrb_define_class_under(mrb, cloudflare, "HostError", E_RUNTIME_ERROR);
+  struct RClass *cloudflare_error = mrb_define_class_under(mrb, cloudflare, "Error", E_STANDARD_ERROR);
+  mrb_define_class_under(mrb, cloudflare, "BindingError", cloudflare_error);
+  mrb_define_class_under(mrb, cloudflare, "HostError", cloudflare_error);
+  mrb_define_class_under(mrb, cloudflare, "ProtocolError", cloudflare_error);
   mrb_define_module_function(mrb, cloudflare, "__kv_get", mrb_cloudflare_kv_get, MRB_ARGS_REQ(2));
   mrb_define_module_function(mrb, cloudflare, "__kv_put", mrb_cloudflare_kv_set, MRB_ARGS_REQ(4));
   mrb_define_module_function(mrb, cloudflare, "__queue_send", mrb_cloudflare_queue_send, MRB_ARGS_REQ(2));
