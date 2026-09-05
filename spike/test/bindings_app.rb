@@ -122,6 +122,15 @@ class BindingsApp
       rescue Cloudflare::HostError => error
         [200, { "content-type" => "text/plain" }, ["host-error=#{error.message}"]]
       end
+    when "/binding/mutable-name"
+      name = "SECOND_KV"
+      binding = Cloudflare::KV.from_env(env, name)
+      name.replace("KV_BINDING")
+      same_binding = binding.equal?(Cloudflare::KV.from_env(env, "SECOND_KV"))
+      binding.put("stable-binding", "stable-value")
+      [200, { "content-type" => "text/plain" }, [
+        [binding.binding_name, binding.binding_name.frozen?, same_binding].inspect,
+      ]]
     when "/binding/missing"
       begin
         env["cloudflare.env"].MISSING_BINDING

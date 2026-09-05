@@ -15,6 +15,10 @@ object. The JavaScript callbacks close over the original Worker `env`, and the
 proxy caches resolved Ruby wrappers for the duration of the Rack request. An
 unknown or unsupported property raises `NoMethodError`.
 
+Binding names are copied and frozen when resolved. Mutating a caller-owned
+String afterward cannot change the resource used by an existing KV or Queue
+wrapper; `binding_name` returns the frozen normalized name.
+
 Inspecting the proxy, including as part of the complete Rack environment,
 never displays resolved values. This prevents variables and secrets from being
 included accidentally in diagnostics through `Cloudflare::Environment#inspect`.

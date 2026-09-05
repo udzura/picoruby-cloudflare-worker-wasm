@@ -444,6 +444,13 @@ const environmentOverlayResetResponse = await dispatch(
 );
 assert.equal(await environmentOverlayResetResponse.text(), '["worker-value", "secret-value"]');
 
+const mutableBindingNameResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/binding/mutable-name"),
+);
+assert.equal(await mutableBindingNameResponse.text(), '["SECOND_KV", true, true]');
+assert.equal(new TextDecoder().decode(namedKvStore.get("stable-binding")), "stable-value");
+
 const cloudflareEnvironmentResponse = await dispatch(
   bindingsRuntime,
   new Request("https://example.com/cloudflare/env"),

@@ -471,13 +471,17 @@ module Rackup
 end
 
 module Cloudflare
+  def self.__normalize_binding_name(name)
+    name.to_s.dup.freeze
+  end
+
   class Environment
     def initialize
       @bindings = {}
     end
 
     def binding(name, expected_class = nil)
-      binding_name = name.to_s
+      binding_name = Cloudflare.__normalize_binding_name(name)
       if @bindings.key?(binding_name)
         value = @bindings[binding_name]
       else
@@ -519,7 +523,7 @@ module Cloudflare
 
   class Binding
     def initialize(binding_name)
-      @binding_name = binding_name
+      @binding_name = Cloudflare.__normalize_binding_name(binding_name)
     end
 
     def binding_name
