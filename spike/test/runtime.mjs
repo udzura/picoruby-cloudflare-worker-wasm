@@ -396,6 +396,15 @@ await closeRuntime(kvRuntime);
 const namedKvStore = new Map();
 const namedKvOptions = new Map();
 const runtimeQueueMessages = [];
+const serializedDispatchEvents = [];
+let releaseFirstSerializedDispatch;
+const firstSerializedDispatchGate = new Promise((resolve) => {
+  releaseFirstSerializedDispatch = resolve;
+});
+let markFirstSerializedDispatchStarted;
+const firstSerializedDispatchStarted = new Promise((resolve) => {
+  markFirstSerializedDispatchStarted = resolve;
+});
 const runtimeWorkerEnv = {
   TEXT_VALUE: "worker-value",
   JSON_VALUE: { retries: 3 },
@@ -411,6 +420,18 @@ const runtimeWorkerEnv = {
   SECOND_KV: {
     async get(key, type) {
       assert.equal(type, "arrayBuffer");
+      if (key === "serialized-first") {
+        serializedDispatchEvents.push("first:start");
+        markFirstSerializedDispatchStarted();
+        await firstSerializedDispatchGate;
+        serializedDispatchEvents.push("first:end");
+        return new TextEncoder().encode("first-response").buffer;
+      }
+      if (key === "serialized-second") {
+        serializedDispatchEvents.push("second:start");
+        serializedDispatchEvents.push("second:end");
+        return new TextEncoder().encode("second-response").buffer;
+      }
       if (key === "reject") throw new Error("KV backend rejected the read");
       const value = namedKvStore.get(key);
       return value === undefined ? null : value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
@@ -674,6 +695,44 @@ assert.equal(
   await formalApiResponse.text(),
   "[true, true, false, false, false, NoMethodError]",
 );
+
+const firstSerializedResponsePromise = dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/dispatch/serialized?serialized-first"),
+);
+await firstSerializedDispatchStarted;
+const secondSerializedResponsePromise = dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/dispatch/serialized?serialized-second"),
+);
+await new Promise((resolve) => setTimeout(resolve, 0));
+assert.deepEqual(serializedDispatchEvents, ["first:start"]);
+releaseFirstSerializedDispatch();
+const [firstSerializedResponse, secondSerializedResponse] = await Promise.all([
+  firstSerializedResponsePromise,
+  secondSerializedResponsePromise,
+]);
+assert.equal(await firstSerializedResponse.text(), "first-response");
+assert.equal(await secondSerializedResponse.text(), "second-response");
+assert.deepEqual(serializedDispatchEvents, [
+  "first:start", "first:end", "second:start", "second:end",
+]);
+
+const rejectedQueuedDispatch = dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/echo", {
+    method: "POST",
+    body: new Uint8Array([1, 2]),
+    duplex: "half",
+  }),
+  { maxRequestBodyBytes: 1 },
+);
+const recoveredQueuedDispatch = dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/cloudflare/env"),
+);
+await assert.rejects(rejectedQueuedDispatch, RequestBodyTooLargeError);
+assert.match(await (await recoveredQueuedDispatch).text(), /^worker-value\|/);
 
 await closeRuntime(bindingsRuntime);
 

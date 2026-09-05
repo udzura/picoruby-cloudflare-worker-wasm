@@ -197,6 +197,10 @@ class BindingsApp
         cache.respond_to?(:get), cache.respond_to?(:put), cache.respond_to?(:set),
         Cloudflare::KV.respond_to?(:get), Cloudflare.respond_to?(:kv_get), direct_new_error,
       ].inspect]]
+    when "/dispatch/serialized"
+      key = env["QUERY_STRING"]
+      value = Cloudflare::KV.from_env(env, "SECOND_KV").get(key)
+      [200, { "content-type" => "text/plain" }, [value]]
     else
       [404, { "content-type" => "text/plain; charset=utf-8" }, ["Not found"]]
     end

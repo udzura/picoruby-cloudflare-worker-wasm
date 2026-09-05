@@ -19,6 +19,7 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const strictDecoder = new TextDecoder("utf-8", { fatal: true });
 const missingEnvironmentValue = Symbol("missingEnvironmentValue");
+const dispatchQueues = new WeakMap();
 
 export class RequestBodyTooLargeError extends Error {
   constructor(limit) {
@@ -496,6 +497,9 @@ export async function createRuntime(createPicoRuby, wasmModule, appBytecode, run
 }
 
 export async function closeRuntime(module) {
+  const pendingDispatch = dispatchQueues.get(module);
+  if (pendingDispatch) await pendingDispatch.catch(() => {});
+
   await module.ccall(
     "picorb_worker_close",
     null,
@@ -521,7 +525,21 @@ export async function handleRequest(
   }
 }
 
-export async function dispatch(module, request, requestOptions = {}) {
+export function dispatch(module, request, requestOptions = {}) {
+  const previousDispatch = dispatchQueues.get(module) ?? Promise.resolve();
+  const currentDispatch = previousDispatch
+    .catch(() => {})
+    .then(() => dispatchOnce(module, request, requestOptions));
+  dispatchQueues.set(module, currentDispatch);
+
+  return currentDispatch.finally(() => {
+    if (dispatchQueues.get(module) === currentDispatch) {
+      dispatchQueues.delete(module);
+    }
+  });
+}
+
+async function dispatchOnce(module, request, requestOptions) {
   const frame = await encodeRackRequest(request, requestOptions);
   const pointer = copyToWasm(module, frame);
   try {
