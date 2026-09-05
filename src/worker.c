@@ -78,7 +78,7 @@ EM_ASYNC_JS(int, picorb_worker_kv_get_bridge,
              uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr), {
   const frame = await Module["picorbWorkerKvGetBridge"](
     UTF8ToString(binding_ptr, binding_len),
-    UTF8ToString(key_ptr, key_len),
+    HEAPU8.slice(key_ptr, key_ptr + key_len),
   );
   if (!(frame instanceof Uint8Array)) return -1;
   const frameLen = frame.byteLength;
@@ -97,7 +97,7 @@ EM_ASYNC_JS(int, picorb_worker_kv_put_bridge,
              uintptr_t frame_len_ptr), {
   const frame = await Module["picorbWorkerKvPutBridge"](
     UTF8ToString(binding_ptr, binding_len),
-    UTF8ToString(key_ptr, key_len),
+    HEAPU8.slice(key_ptr, key_ptr + key_len),
     HEAPU8.slice(value_ptr, value_ptr + value_len),
     UTF8ToString(options_ptr, options_len),
   );

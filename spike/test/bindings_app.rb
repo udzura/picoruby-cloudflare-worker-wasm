@@ -21,6 +21,18 @@ class BindingsApp
     when "/kv/named/get"
       value = Cloudflare::KV.from_env(env, "SECOND_KV").get("named-key")
       [200, { "content-type" => "text/plain; charset=utf-8" }, [value || "missing"]]
+    when "/kv/nul-key/set"
+      env["cloudflare.env"].SECOND_KV.put("account\x00other", "nul-value")
+      [200, { "content-type" => "text/plain" }, ["nul-set"]]
+    when "/kv/nul-key/get"
+      value = env["cloudflare.env"].SECOND_KV.get("account\x00other")
+      [200, { "content-type" => "text/plain" }, [value || "missing"]]
+    when "/kv/invalid-utf8-key"
+      begin
+        env["cloudflare.env"].SECOND_KV.put("\xff", "invalid-value")
+      rescue Cloudflare::HostError => error
+        [200, { "content-type" => "text/plain" }, ["host-error=#{error.message}"]]
+      end
     when "/kv/ttl"
       value = "\x00\xff"
       results = [

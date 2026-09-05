@@ -77,7 +77,8 @@ KV Promise or an unavailable namespace is raised in Ruby as
   `ttl:` is supported; metadata, absolute expiration, delete, list, and batch
   operations are not included yet.
 - Keys follow Cloudflare's basic constraints: they must not be empty, `.` or
-  `..`, and are limited to 512 bytes.
+  `..`, and are limited to 512 bytes. Ruby keys must contain valid UTF-8;
+  embedded NUL bytes are preserved rather than treated as terminators.
 - Values are limited to 8 MiB so the complete buffered Rack response can still
   fit the Worker ABI and VM memory budget. This is lower than Workers KV's
   platform maximum.

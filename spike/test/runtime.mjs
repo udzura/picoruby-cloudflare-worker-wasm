@@ -454,6 +454,30 @@ const namedGetResponse = await dispatch(
 );
 assert.equal(await namedGetResponse.text(), "named-value");
 
+const nulKeySetResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/kv/nul-key/set"),
+);
+assert.equal(await nulKeySetResponse.text(), "nul-set");
+assert.equal(new TextDecoder().decode(namedKvStore.get("account\u0000other")), "nul-value");
+assert.equal(namedKvStore.has("account"), false, "a NUL byte must not truncate the KV key");
+
+const nulKeyGetResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/kv/nul-key/get"),
+);
+assert.equal(await nulKeyGetResponse.text(), "nul-value");
+
+const invalidUtf8KeyResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/kv/invalid-utf8-key"),
+);
+assert.equal(
+  await invalidUtf8KeyResponse.text(),
+  "host-error=Cloudflare KV key must be valid UTF-8",
+);
+assert.equal(namedKvStore.has("�"), false, "an invalid UTF-8 key must not be replaced and written");
+
 const kvAliasResponse = await dispatch(
   bindingsRuntime,
   new Request("https://example.com/kv/from-env-alias"),

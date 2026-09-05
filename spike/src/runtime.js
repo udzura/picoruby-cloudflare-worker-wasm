@@ -80,14 +80,14 @@ export function mergeBindings(...bindingSets) {
 export function createCloudflareKvBindings(env) {
   const get = async (bindingName, key) => {
     const namespace = getKvNamespace(env, bindingName);
-    const value = await namespace.get(key, "arrayBuffer");
+    const value = await namespace.get(decodeKvKey(key), "arrayBuffer");
     return value === null ? null : new Uint8Array(value);
   };
 
   const put = async (bindingName, key, value, options = {}) => {
     const namespace = getKvNamespace(env, bindingName);
     const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
-    await namespace.put(key, bytes.buffer, options);
+    await namespace.put(decodeKvKey(key), bytes.buffer, options);
   };
 
   return {
@@ -118,6 +118,15 @@ export function createCloudflareKvBindings(env) {
       });
     },
   };
+}
+
+function decodeKvKey(key) {
+  if (typeof key === "string") return key;
+  try {
+    return strictDecoder.decode(key);
+  } catch {
+    throw new TypeError("Cloudflare KV key must be valid UTF-8");
+  }
 }
 
 function parseKvPutOptions(optionsJson) {
