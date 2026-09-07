@@ -16,16 +16,15 @@ WORKER_WASM_REVISION = ENV.fetch("PICORUBY_WORKER_WASM_REV", "939022a7d2c77acb3b
 abort "PicoRuby Rakefile was not found: #{PICORUBY_RAKEFILE}" unless File.file?(PICORUBY_RAKEFILE)
 
 def verify_emscripten!
-  expected = File.read(File.join(SPIKE_ROOT, ".emscripten-version")).strip
   output, status = Open3.capture2e("emcc", "--version")
-  abort "emcc was not found. Activate emsdk #{expected} first." unless status.success?
+  abort "emcc failed: #{output}; see README for brew install emscripten and PATH setup." unless status.success?
 
-  actual = output[/\bemcc .*?\s(\d+\.\d+\.\d+)\s\(/, 1]
-  return if actual == expected
+  actual = output[/emcc.*? (\d+\.\d+\.\d+)/, 1]
+  return if actual && actual.split('.').first.to_i >= 5
 
-  abort "Emscripten #{expected} is required (found #{actual || "unknown"})."
+  abort "Emscripten >= 5.0.0 is required (found #{actual || "unknown"}); see README for brew install emscripten and PATH setup."
 rescue Errno::ENOENT
-  abort "emcc was not found. Activate emsdk #{expected} first."
+  abort "emcc was not found. On macOS, run brew install emscripten and add its bin directory to PATH (see README)."
 end
 
 def build_runtime!

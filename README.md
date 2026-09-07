@@ -82,7 +82,7 @@ MRuby::CrossBuild.new("picoruby-worker-wasm") do |conf|
 end
 ```
 
-The current build uses Emscripten 5.0.7. It produces:
+The build accepts Emscripten 5.0.0 or later. On macOS, install it with `brew install emscripten` (see the spike README for PATH setup). It produces:
 
 ```text
 picoruby-worker.js

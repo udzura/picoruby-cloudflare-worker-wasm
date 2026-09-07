@@ -10,8 +10,20 @@ configuration.
 ## Prerequisites
 
 - A PicoRuby source checkout compatible with this gem
-- Emscripten 5.0.7 (`spike/.emscripten-version` is checked before a build)
+- Emscripten >= 5.0.0 (checked before a build)
 - Node.js and npm
+
+On macOS, install Emscripten via Homebrew:
+
+```sh
+brew install emscripten
+export PATH="$(brew --prefix emscripten)/bin:$PATH"
+emcc --version
+```
+
+If switching from emsdk, use a shell without `emsdk_env.sh` and unset
+`EMSDK`, `EM_CONFIG`, and `EM_CACHE` to avoid mixing toolchains.
+The version check accepts 5.0.0 and later; this does not mean every version has been tested.
 
 Install Worker development dependencies, point the project at PicoRuby, and
 build the runtime:
