@@ -1,38 +1,72 @@
 # Cloudflare KV
 
-The spike binds one namespace as `PICORUBY_KV` in `spike/wrangler.jsonc`.
+The spike binds one namespace as `CACHE_KV` in `spike/wrangler.jsonc`.
 Wrangler creates a local namespace for `wrangler dev`. Its automatic resource
 provisioning creates the remote namespace on the first deploy and records its
 ID in the configuration.
 
-Ruby applications use `Cloudflare::KV`:
+Rack applications access a namespace through the Cloudflare environment proxy:
 
 ```ruby
-Cloudflare::KV.set("greeting", "hello")
-value = Cloudflare::KV.get("greeting")
-# value is "hello", or nil when the key does not exist
+class App
+  def self.call(env)
+    cache = env["cloudflare.env"].CACHE_KV
+    cache.put("greeting", "hello")
+    value = cache.get("greeting")
+    [200, { "content-type" => "text/plain" }, [value || "missing"]]
+  end
+end
 ```
 
-Values remain binary-safe PicoRuby Strings. The Worker host reads KV with
-`arrayBuffer` and sends the exact bytes through the JSPI bridge. `set` returns
-`nil` after the KV write Promise resolves.
+The Ruby-oriented equivalent uses the same cached proxy binding:
 
-`Cloudflare.kv_get` and `Cloudflare.kv_set` are the C-backed direct wrappers.
-They are kept public as the thin host boundary; application code should use
-`Cloudflare::KV` instead.
+```ruby
+cache = Cloudflare::KV.from_env(request.env, "CACHE_KV")
+```
+
+`Cloudflare::KV.from_env` validates that the named binding is KV. Asking for a
+missing binding, Queue, or scalar value raises `Cloudflare::BindingError`.
+
+Values remain binary-safe PicoRuby Strings. The Worker host reads KV with
+`arrayBuffer` and sends the exact bytes through the JSPI bridge. A successful
+`put` returns `nil` after the KV write Promise resolves.
+
+Pass `ttl:` to expire a value after a number of seconds:
+
+```ruby
+cache.put("greeting", "hello", ttl: 300)
+```
+
+`ttl` must be a JavaScript-safe integer of at least 60 seconds, following
+[Workers KV's expiration limits](https://developers.cloudflare.com/kv/api/write-key-value-pairs/#expiring-keys).
+Omitting it (or passing `nil`) writes without expiration. Invalid TTL values
+raise `ArgumentError` before crossing the host bridge. Options cross the Ruby-to-JS
+bridge as a JSON object (`{"ttl":300}`); JS maps `ttl` to `expirationTtl`.
+This keeps the bridge extensible without adding positional arguments for each
+future option. Only `ttl:` is currently supported.
+
+The two public entry points are `env["cloudflare.env"]` and
+`Cloudflare::KV.from_env`. There is no implicit default namespace; class-level
+get/put methods, direct construction, and `set` aliases are not part of the API.
+
+All asynchronous host calls use a shared, versioned result frame. A rejected
+KV Promise raises `Cloudflare::HostError`. Missing, unregistered, or incorrectly
+typed namespaces raise `Cloudflare::BindingError`; malformed bridge results
+raise `Cloudflare::ProtocolError`.
 
 ## Scope and limits
 
-- Only the fixed `PICORUBY_KV` binding is supported.
-- `get` and `set` are the only operations. Metadata, expiration, delete, list,
-  and multiple namespaces are not included yet.
+- `get` and `put` are the only operations. Relative expiration via
+  `ttl:` is supported; metadata, absolute expiration, delete, list, and batch
+  operations are not included yet.
 - Keys follow Cloudflare's basic constraints: they must not be empty, `.` or
-  `..`, and are limited to 512 bytes.
+  `..`, and are limited to 512 bytes. Ruby keys must contain valid UTF-8;
+  embedded NUL bytes are preserved rather than treated as terminators.
 - Values are limited to 8 MiB so the complete buffered Rack response can still
   fit the Worker ABI and VM memory budget. This is lower than Workers KV's
   platform maximum.
-- A rejected KV Promise currently reaches the Worker-level error handler as a
-  500 response. Converting those failures into Ruby exceptions is future work.
+- Namespace names must be non-empty and at most 256 bytes. An absent or
+  non-KV binding raises `Cloudflare::BindingError`.
 
 The normal spike app exposes the fixed `spike-key` sample through `/kv/set` and
 `/kv/get`. Use local development while exercising its write endpoint. For an

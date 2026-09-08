@@ -23,8 +23,13 @@
 #define PICORB_WORKER_RESPONSE_MAGIC "PRR1"
 #define PICORB_WORKER_MAX_REQUEST_FRAME_SIZE (2u * 1024u * 1024u)
 #define PICORB_WORKER_MAX_RESPONSE_FRAME_SIZE (8u * 1024u * 1024u)
+#define PICORB_WORKER_MAX_BINDING_NAME_SIZE 256u
 #define PICORB_WORKER_MAX_KV_KEY_SIZE 512u
 #define PICORB_WORKER_MAX_KV_VALUE_SIZE (8u * 1024u * 1024u)
+#define PICORB_WORKER_MAX_QUEUE_MESSAGE_SIZE (128u * 1024u)
+#define PICORB_WORKER_MAX_ENV_NAME_SIZE 1024u
+#define PICORB_WORKER_HOST_RESULT_MAGIC "PHB1"
+#define PICORB_WORKER_HOST_RESULT_HEADER_SIZE 12u
 
 enum picorb_worker_status {
   PICORB_WORKER_OK = 0,
@@ -52,38 +57,103 @@ static mrb_value dispatch_proc;
 static picorb_worker_buffer response_buffer = { NULL, 0, 0 };
 static picorb_worker_buffer error_buffer = { NULL, 0, 0 };
 
+enum picorb_worker_host_result_kind {
+  PICORB_WORKER_HOST_OK = 0,
+  PICORB_WORKER_HOST_MISSING = 1,
+  PICORB_WORKER_HOST_ERROR = 2,
+  PICORB_WORKER_HOST_BINDING_ERROR = 3,
+  PICORB_WORKER_HOST_ARGUMENT_ERROR = 4,
+  PICORB_WORKER_HOST_PROTOCOL_ERROR = 5
+};
+
+typedef struct picorb_worker_host_result {
+  uint32_t kind;
+  const uint8_t *payload;
+  uint32_t payload_len;
+} picorb_worker_host_result;
+
 EM_ASYNC_JS(int, picorb_worker_jspi_add, (int left, int right), {
   return await Module["picorbWorkerJspiAdd"](left, right);
 });
 
-EM_ASYNC_JS(int, picorb_worker_kv_get,
-            (const char *key_ptr, int key_len, uintptr_t value_ptr_ptr, uintptr_t value_len_ptr,
-             int max_value_len), {
-  const key = UTF8ToString(key_ptr, key_len);
-  const value = await Module["picorbWorkerKvGet"](key);
-  if (value === null) {
-    HEAPU32[value_ptr_ptr >>> 2] = 0;
-    HEAPU32[value_len_ptr >>> 2] = 0;
-    return 0;
-  }
-
-  const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
-  const value_len = bytes.byteLength;
-  if (value_len > max_value_len) return -2;
-  const value_ptr = value_len > 0 ? Module._malloc(value_len) : 0;
-  if (value_len > 0 && value_ptr === 0) return -1;
-
-  if (value_len > 0) HEAPU8.set(bytes, value_ptr);
-  HEAPU32[value_ptr_ptr >>> 2] = value_ptr;
-  HEAPU32[value_len_ptr >>> 2] = value_len;
-  return 1;
+EM_ASYNC_JS(int, picorb_worker_kv_get_bridge,
+            (const char *binding_ptr, int binding_len, const char *key_ptr, int key_len,
+             uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr), {
+  const frame = await Module["picorbWorkerKvGetBridge"](
+    UTF8ToString(binding_ptr, binding_len),
+    HEAPU8.slice(key_ptr, key_ptr + key_len),
+  );
+  if (!(frame instanceof Uint8Array)) return -1;
+  const frameLen = frame.byteLength;
+  const framePtr = frameLen > 0 ? Module._malloc(frameLen) : 0;
+  if (frameLen > 0 && framePtr === 0) return -2;
+  if (frameLen > 0) HEAPU8.set(frame, framePtr);
+  HEAPU32[frame_ptr_ptr >>> 2] = framePtr;
+  HEAPU32[frame_len_ptr >>> 2] = frameLen;
+  return 0;
 });
 
-EM_ASYNC_JS(int, picorb_worker_kv_set,
-            (const char *key_ptr, int key_len, const uint8_t *value_ptr, int value_len), {
-  const key = UTF8ToString(key_ptr, key_len);
-  const value = HEAPU8.slice(value_ptr, value_ptr + value_len);
-  await Module["picorbWorkerKvSet"](key, value);
+EM_ASYNC_JS(int, picorb_worker_kv_put_bridge,
+            (const char *binding_ptr, int binding_len, const char *key_ptr, int key_len,
+             const uint8_t *value_ptr, int value_len, const char *options_ptr,
+             int options_len, uintptr_t frame_ptr_ptr,
+             uintptr_t frame_len_ptr), {
+  const frame = await Module["picorbWorkerKvPutBridge"](
+    UTF8ToString(binding_ptr, binding_len),
+    HEAPU8.slice(key_ptr, key_ptr + key_len),
+    HEAPU8.slice(value_ptr, value_ptr + value_len),
+    UTF8ToString(options_ptr, options_len),
+  );
+  if (!(frame instanceof Uint8Array)) return -1;
+  const frameLen = frame.byteLength;
+  const framePtr = frameLen > 0 ? Module._malloc(frameLen) : 0;
+  if (frameLen > 0 && framePtr === 0) return -2;
+  if (frameLen > 0) HEAPU8.set(frame, framePtr);
+  HEAPU32[frame_ptr_ptr >>> 2] = framePtr;
+  HEAPU32[frame_len_ptr >>> 2] = frameLen;
+  return 0;
+});
+
+EM_ASYNC_JS(int, picorb_worker_queue_send_bridge,
+            (const char *binding_ptr, int binding_len, const uint8_t *message_ptr,
+             int message_len, uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr), {
+  const frame = await Module["picorbWorkerQueueSendBridge"](
+    UTF8ToString(binding_ptr, binding_len),
+    HEAPU8.slice(message_ptr, message_ptr + message_len),
+  );
+  if (!(frame instanceof Uint8Array)) return -1;
+  const frameLen = frame.byteLength;
+  const framePtr = frameLen > 0 ? Module._malloc(frameLen) : 0;
+  if (frameLen > 0 && framePtr === 0) return -2;
+  if (frameLen > 0) HEAPU8.set(frame, framePtr);
+  HEAPU32[frame_ptr_ptr >>> 2] = framePtr;
+  HEAPU32[frame_len_ptr >>> 2] = frameLen;
+  return 0;
+});
+
+EM_JS(int, picorb_worker_env_get_bridge,
+       (const char *key_ptr, int key_len, uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr), {
+  const frame = Module["picorbWorkerEnvGetBridge"](UTF8ToString(key_ptr, key_len));
+  if (!(frame instanceof Uint8Array)) return -1;
+  const frameLen = frame.byteLength;
+  const framePtr = frameLen > 0 ? Module._malloc(frameLen) : 0;
+  if (frameLen > 0 && framePtr === 0) return -2;
+  if (frameLen > 0) HEAPU8.set(frame, framePtr);
+  HEAPU32[frame_ptr_ptr >>> 2] = framePtr;
+  HEAPU32[frame_len_ptr >>> 2] = frameLen;
+  return 0;
+});
+
+EM_JS(int, picorb_worker_env_binding_type_bridge,
+       (const char *key_ptr, int key_len, uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr), {
+  const frame = Module["picorbWorkerEnvBindingTypeBridge"](UTF8ToString(key_ptr, key_len));
+  if (!(frame instanceof Uint8Array)) return -1;
+  const frameLen = frame.byteLength;
+  const framePtr = frameLen > 0 ? Module._malloc(frameLen) : 0;
+  if (frameLen > 0 && framePtr === 0) return -2;
+  if (frameLen > 0) HEAPU8.set(frame, framePtr);
+  HEAPU32[frame_ptr_ptr >>> 2] = framePtr;
+  HEAPU32[frame_len_ptr >>> 2] = frameLen;
   return 0;
 });
 
@@ -95,6 +165,75 @@ mrb_jspi_probe_add(mrb_state *mrb, mrb_value self)
   mrb_int right;
   mrb_get_args(mrb, "ii", &left, &right);
   return mrb_int_value(mrb, picorb_worker_jspi_add((int)left, (int)right));
+}
+
+static uint32_t
+read_u32_le(const uint8_t *ptr)
+{
+  return (uint32_t)ptr[0] |
+         ((uint32_t)ptr[1] << 8) |
+         ((uint32_t)ptr[2] << 16) |
+         ((uint32_t)ptr[3] << 24);
+}
+
+static mrb_bool
+decode_host_result(const uint8_t *frame, size_t frame_len, picorb_worker_host_result *result)
+{
+  if (!frame || frame_len < PICORB_WORKER_HOST_RESULT_HEADER_SIZE ||
+      memcmp(frame, PICORB_WORKER_HOST_RESULT_MAGIC, 4) != 0) {
+    return FALSE;
+  }
+
+  uint32_t kind = read_u32_le(frame + 4);
+  uint32_t payload_len = read_u32_le(frame + 8);
+  if (kind > PICORB_WORKER_HOST_PROTOCOL_ERROR ||
+      payload_len != frame_len - PICORB_WORKER_HOST_RESULT_HEADER_SIZE) {
+    return FALSE;
+  }
+
+  result->kind = kind;
+  result->payload = frame + PICORB_WORKER_HOST_RESULT_HEADER_SIZE;
+  result->payload_len = payload_len;
+  return TRUE;
+}
+
+static mrb_noreturn void
+raise_cloudflare_error(mrb_state *mrb, const char *class_name, const char *message)
+{
+  struct RClass *cloudflare = mrb_module_get(mrb, "Cloudflare");
+  struct RClass *error = mrb_class_get_under(mrb, cloudflare, class_name);
+  mrb_raise(mrb, error, message);
+}
+
+static mrb_noreturn void
+raise_host_result_error(mrb_state *mrb, const picorb_worker_host_result *result, uintptr_t frame_ptr)
+{
+  mrb_value message = mrb_str_new(mrb, (const char *)result->payload, result->payload_len);
+  free((void *)frame_ptr);
+  struct RClass *error;
+  switch (result->kind) {
+    case PICORB_WORKER_HOST_ARGUMENT_ERROR:
+      error = E_ARGUMENT_ERROR;
+      break;
+    case PICORB_WORKER_HOST_BINDING_ERROR:
+      error = mrb_class_get_under(mrb, mrb_module_get(mrb, "Cloudflare"), "BindingError");
+      break;
+    case PICORB_WORKER_HOST_PROTOCOL_ERROR:
+      error = mrb_class_get_under(mrb, mrb_module_get(mrb, "Cloudflare"), "ProtocolError");
+      break;
+    default:
+      error = mrb_class_get_under(mrb, mrb_module_get(mrb, "Cloudflare"), "HostError");
+      break;
+  }
+  mrb_exc_raise(mrb, mrb_exc_new_str(mrb, error, message));
+}
+
+static void
+validate_cloudflare_binding_name(mrb_state *mrb, const char *binding, mrb_int binding_len)
+{
+  if (binding_len <= 0 || binding_len > PICORB_WORKER_MAX_BINDING_NAME_SIZE) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid Cloudflare binding name");
+  }
 }
 
 static void
@@ -111,25 +250,44 @@ static mrb_value
 mrb_cloudflare_kv_get(mrb_state *mrb, mrb_value self)
 {
   (void)self;
+  const char *binding;
   const char *key;
+  mrb_int binding_len;
   mrb_int key_len;
-  mrb_get_args(mrb, "s", &key, &key_len);
-  if (key_len > INT_MAX) {
-    mrb_raise(mrb, E_ARGUMENT_ERROR, "Cloudflare KV key is too large");
+  mrb_get_args(mrb, "ss", &binding, &binding_len, &key, &key_len);
+  if (binding_len > INT_MAX || key_len > INT_MAX) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "Cloudflare KV binding name or key is too large");
   }
+  validate_cloudflare_binding_name(mrb, binding, binding_len);
   validate_cloudflare_kv_key(mrb, key, key_len);
 
-  uintptr_t value_ptr = 0;
-  uint32_t value_len = 0;
-  int status = picorb_worker_kv_get(key, (int)key_len, (uintptr_t)&value_ptr, (uintptr_t)&value_len,
-                                    PICORB_WORKER_MAX_KV_VALUE_SIZE);
-  if (status == 0) return mrb_nil_value();
+  uintptr_t frame_ptr = 0;
+  uint32_t frame_len = 0;
+  int status = picorb_worker_kv_get_bridge(binding, (int)binding_len, key, (int)key_len,
+                                            (uintptr_t)&frame_ptr, (uintptr_t)&frame_len);
   if (status < 0) {
-    mrb_raise(mrb, E_RUNTIME_ERROR, "Cloudflare KV get failed");
+    raise_cloudflare_error(mrb, "ProtocolError", "Cloudflare KV get bridge failed");
   }
 
-  mrb_value value = mrb_str_new(mrb, value_ptr ? (const char *)value_ptr : "", value_len);
-  free((void *)value_ptr);
+  picorb_worker_host_result result;
+  if (!decode_host_result((const uint8_t *)frame_ptr, frame_len, &result)) {
+    free((void *)frame_ptr);
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare KV host result");
+  }
+  if (result.kind == PICORB_WORKER_HOST_MISSING) {
+    free((void *)frame_ptr);
+    return mrb_nil_value();
+  }
+  if (result.kind >= PICORB_WORKER_HOST_ERROR) {
+    raise_host_result_error(mrb, &result, frame_ptr);
+  }
+  if (result.payload_len > PICORB_WORKER_MAX_KV_VALUE_SIZE) {
+    free((void *)frame_ptr);
+    raise_cloudflare_error(mrb, "ProtocolError", "Cloudflare KV host value is too large");
+  }
+
+  mrb_value value = mrb_str_new(mrb, (const char *)result.payload, result.payload_len);
+  free((void *)frame_ptr);
   return value;
 }
 
@@ -137,24 +295,174 @@ static mrb_value
 mrb_cloudflare_kv_set(mrb_state *mrb, mrb_value self)
 {
   (void)self;
+  const char *binding;
   const char *key;
   const char *value;
+  const char *options;
+  mrb_int binding_len;
   mrb_int key_len;
   mrb_int value_len;
-  mrb_get_args(mrb, "ss", &key, &key_len, &value, &value_len);
-  if (key_len > INT_MAX || value_len > INT_MAX) {
-    mrb_raise(mrb, E_ARGUMENT_ERROR, "Cloudflare KV key or value is too large");
+  mrb_int options_len;
+  mrb_get_args(mrb, "ssss", &binding, &binding_len, &key, &key_len,
+               &value, &value_len, &options, &options_len);
+  if (binding_len > INT_MAX || key_len > INT_MAX || value_len > INT_MAX || options_len > INT_MAX) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "Cloudflare KV binding name, key, value, or options is too large");
   }
+  validate_cloudflare_binding_name(mrb, binding, binding_len);
   validate_cloudflare_kv_key(mrb, key, key_len);
   if (value_len > PICORB_WORKER_MAX_KV_VALUE_SIZE) {
     mrb_raise(mrb, E_ARGUMENT_ERROR, "Cloudflare KV value is too large");
   }
 
-  int status = picorb_worker_kv_set(key, (int)key_len, (const uint8_t *)value, (int)value_len);
-  if (status != 0) {
-    mrb_raise(mrb, E_RUNTIME_ERROR, "Cloudflare KV set failed");
+  uintptr_t frame_ptr = 0;
+  uint32_t frame_len = 0;
+  int status = picorb_worker_kv_put_bridge(binding, (int)binding_len, key, (int)key_len,
+                                            (const uint8_t *)value, (int)value_len,
+                                            options, (int)options_len,
+                                            (uintptr_t)&frame_ptr, (uintptr_t)&frame_len);
+  if (status < 0) {
+    raise_cloudflare_error(mrb, "ProtocolError", "Cloudflare KV put bridge failed");
   }
+
+  picorb_worker_host_result result;
+  if (!decode_host_result((const uint8_t *)frame_ptr, frame_len, &result)) {
+    free((void *)frame_ptr);
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare KV host result");
+  }
+  if (result.kind >= PICORB_WORKER_HOST_ERROR) {
+    raise_host_result_error(mrb, &result, frame_ptr);
+  }
+  if (result.kind != PICORB_WORKER_HOST_OK || result.payload_len != 0) {
+    free((void *)frame_ptr);
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare KV put host result");
+  }
+  free((void *)frame_ptr);
   return mrb_nil_value();
+}
+
+static mrb_value
+mrb_cloudflare_queue_send(mrb_state *mrb, mrb_value self)
+{
+  (void)self;
+  const char *binding;
+  const char *message;
+  mrb_int binding_len;
+  mrb_int message_len;
+  mrb_get_args(mrb, "ss", &binding, &binding_len, &message, &message_len);
+  if (binding_len > INT_MAX || message_len > INT_MAX) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "Cloudflare Queue binding name or message is too large");
+  }
+  validate_cloudflare_binding_name(mrb, binding, binding_len);
+  if (message_len > PICORB_WORKER_MAX_QUEUE_MESSAGE_SIZE) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "Cloudflare Queue message is too large");
+  }
+
+  uintptr_t frame_ptr = 0;
+  uint32_t frame_len = 0;
+  int status = picorb_worker_queue_send_bridge(binding, (int)binding_len,
+                                                (const uint8_t *)message, (int)message_len,
+                                                (uintptr_t)&frame_ptr, (uintptr_t)&frame_len);
+  if (status < 0) {
+    raise_cloudflare_error(mrb, "ProtocolError", "Cloudflare Queue send bridge failed");
+  }
+
+  picorb_worker_host_result result;
+  if (!decode_host_result((const uint8_t *)frame_ptr, frame_len, &result)) {
+    free((void *)frame_ptr);
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare Queue host result");
+  }
+  if (result.kind >= PICORB_WORKER_HOST_ERROR) {
+    raise_host_result_error(mrb, &result, frame_ptr);
+  }
+  if (result.kind != PICORB_WORKER_HOST_OK || result.payload_len != 0) {
+    free((void *)frame_ptr);
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare Queue send host result");
+  }
+  free((void *)frame_ptr);
+  return mrb_nil_value();
+}
+
+static mrb_value
+mrb_cloudflare_env_get(mrb_state *mrb, mrb_value self)
+{
+  (void)self;
+  const char *key;
+  mrb_int key_len;
+  mrb_get_args(mrb, "s", &key, &key_len);
+  if (key_len <= 0 || key_len > PICORB_WORKER_MAX_ENV_NAME_SIZE || key_len > INT_MAX) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid environment variable name");
+  }
+
+  uintptr_t frame_ptr = 0;
+  uint32_t frame_len = 0;
+  int status = picorb_worker_env_get_bridge(key, (int)key_len, (uintptr_t)&frame_ptr,
+                                             (uintptr_t)&frame_len);
+  if (status < 0) {
+    raise_cloudflare_error(mrb, "ProtocolError", "environment lookup bridge failed");
+  }
+
+  picorb_worker_host_result result;
+  if (!decode_host_result((const uint8_t *)frame_ptr, frame_len, &result)) {
+    free((void *)frame_ptr);
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid environment host result");
+  }
+  if (result.kind == PICORB_WORKER_HOST_MISSING) {
+    free((void *)frame_ptr);
+    return mrb_nil_value();
+  }
+  if (result.kind >= PICORB_WORKER_HOST_ERROR) {
+    raise_host_result_error(mrb, &result, frame_ptr);
+  }
+
+  mrb_value value = mrb_str_new(mrb, (const char *)result.payload, result.payload_len);
+  free((void *)frame_ptr);
+  return value;
+}
+
+static mrb_value
+mrb_cloudflare_warn_env_mutation(mrb_state *mrb, mrb_value self)
+{
+  (void)self;
+  mrb_warn(mrb, "ENV changes are request-local and do not update Cloudflare bindings");
+  return mrb_nil_value();
+}
+
+static mrb_value
+mrb_cloudflare_env_binding_type(mrb_state *mrb, mrb_value self)
+{
+  (void)self;
+  const char *key;
+  mrb_int key_len;
+  mrb_get_args(mrb, "s", &key, &key_len);
+  if (key_len <= 0 || key_len > PICORB_WORKER_MAX_BINDING_NAME_SIZE || key_len > INT_MAX) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid Cloudflare binding name");
+  }
+
+  uintptr_t frame_ptr = 0;
+  uint32_t frame_len = 0;
+  int status = picorb_worker_env_binding_type_bridge(key, (int)key_len,
+                                                      (uintptr_t)&frame_ptr,
+                                                      (uintptr_t)&frame_len);
+  if (status < 0) {
+    raise_cloudflare_error(mrb, "ProtocolError", "Cloudflare binding lookup bridge failed");
+  }
+
+  picorb_worker_host_result result;
+  if (!decode_host_result((const uint8_t *)frame_ptr, frame_len, &result)) {
+    free((void *)frame_ptr);
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare binding host result");
+  }
+  if (result.kind == PICORB_WORKER_HOST_MISSING) {
+    free((void *)frame_ptr);
+    return mrb_nil_value();
+  }
+  if (result.kind >= PICORB_WORKER_HOST_ERROR) {
+    raise_host_result_error(mrb, &result, frame_ptr);
+  }
+
+  mrb_value value = mrb_str_new(mrb, (const char *)result.payload, result.payload_len);
+  free((void *)frame_ptr);
+  return value;
 }
 
 static int
@@ -491,8 +799,18 @@ mrb_picoruby_worker_wasm_gem_init(mrb_state *mrb)
   mrb_define_class_method_id(mrb, jspi_probe, MRB_SYM(add), mrb_jspi_probe_add, MRB_ARGS_REQ(2));
 
   struct RClass *cloudflare = mrb_define_module(mrb, "Cloudflare");
-  mrb_define_module_function_id(mrb, cloudflare, MRB_SYM(kv_get), mrb_cloudflare_kv_get, MRB_ARGS_REQ(1));
-  mrb_define_module_function_id(mrb, cloudflare, MRB_SYM(kv_set), mrb_cloudflare_kv_set, MRB_ARGS_REQ(2));
+  struct RClass *cloudflare_error = mrb_define_class_under(mrb, cloudflare, "Error", E_STANDARD_ERROR);
+  mrb_define_class_under(mrb, cloudflare, "BindingError", cloudflare_error);
+  mrb_define_class_under(mrb, cloudflare, "HostError", cloudflare_error);
+  mrb_define_class_under(mrb, cloudflare, "ProtocolError", cloudflare_error);
+  mrb_define_module_function(mrb, cloudflare, "__kv_get", mrb_cloudflare_kv_get, MRB_ARGS_REQ(2));
+  mrb_define_module_function(mrb, cloudflare, "__kv_put", mrb_cloudflare_kv_set, MRB_ARGS_REQ(4));
+  mrb_define_module_function(mrb, cloudflare, "__queue_send", mrb_cloudflare_queue_send, MRB_ARGS_REQ(2));
+  mrb_define_module_function(mrb, cloudflare, "__env_get_raw", mrb_cloudflare_env_get, MRB_ARGS_REQ(1));
+  mrb_define_module_function(mrb, cloudflare, "__warn_env_mutation", mrb_cloudflare_warn_env_mutation,
+                             MRB_ARGS_NONE());
+  mrb_define_module_function(mrb, cloudflare, "__env_binding_type", mrb_cloudflare_env_binding_type,
+                             MRB_ARGS_REQ(1));
 }
 
 void

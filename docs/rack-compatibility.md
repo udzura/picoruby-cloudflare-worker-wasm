@@ -13,6 +13,7 @@ The adapter currently provides:
   authority, content headers, and other `HTTP_` request headers;
 - `rack.url_scheme`, `rack.input`, `rack.errors`, and
   `rack.response_finished`;
+- a request-scoped `Cloudflare::Environment` proxy in `cloudflare.env`;
 - binary-safe `rack.input` methods `read`, `gets`, `each`, `rewind`, and
   `close` over the buffered request body;
 - Integer status and lowercase response-header validation;
@@ -73,9 +74,17 @@ single-request execution model. Emscripten's Wasm-native setjmp/longjmp support
 is required so suspension does not cross an intervening JavaScript exception
 wrapper.
 
-This probe is not yet a Cloudflare binding API. Binding lookup, argument and
-result encoding, rejected-Promise mapping to Ruby exceptions, and resource
-limits still need explicit adapters and tests.
+KV and Queue producers use this mechanism through a shared host-result frame.
+Binding lookup is synchronous because the Worker `env` object is already in
+request scope; KV and Queue operations suspend through JSPI while their
+Promises are pending. Rejections are raised as `Cloudflare::HostError`.
+
+Calls to `dispatch` for the same Wasm runtime are serialized in invocation
+order. A dispatch waiting on a JSPI host call therefore completes before the
+next request can mutate VM globals, the request-local `ENV` overlay, or shared
+response buffers. A failed dispatch releases the queue, and `closeRuntime`
+waits for already queued dispatches before closing the VM. Separate runtime
+instances keep independent queues.
 
 Streaming request/response bodies would require a further host-driven protocol
 instead of one request frame and one response frame. Any incompatible wire or

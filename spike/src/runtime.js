@@ -1,9 +1,25 @@
+import {
+  captureHostCall,
+  captureHostCallSync,
+  HostArgumentError,
+  HostBindingError,
+  HostProtocolError,
+  HostResultKind,
+  encodeHostResult,
+  hostMissing,
+  hostOk,
+  utf8,
+} from "./host-bridge.js";
+
 const ABI_VERSION = 1;
 const REQUEST_MAGIC = new Uint8Array([0x50, 0x52, 0x51, 0x31]); // PRQ1
 const RESPONSE_MAGIC = new Uint8Array([0x50, 0x52, 0x52, 0x31]); // PRR1
 const DEFAULT_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const strictDecoder = new TextDecoder("utf-8", { fatal: true });
+const missingEnvironmentValue = Symbol("missingEnvironmentValue");
+const dispatchQueues = new WeakMap();
 
 export class RequestBodyTooLargeError extends Error {
   constructor(limit) {
@@ -12,12 +28,17 @@ export class RequestBodyTooLargeError extends Error {
   }
 }
 
-async function unavailableKvGet() {
-  throw new Error("PICORUBY_KV binding is not configured");
+async function unavailableHostBridge() {
+  return await captureHostCall(async () => {
+    throw new HostBindingError("PicoRuby Worker binding is not configured");
+  });
 }
 
-async function unavailableKvSet() {
-  throw new Error("PICORUBY_KV binding is not configured");
+function unavailableEnvironmentBridge() {
+  return encodeHostResult(
+    HostResultKind.bindingError,
+    utf8("PicoRuby Worker environment binding is not configured"),
+  );
 }
 
 const defaultRuntimeBindings = {
@@ -25,8 +46,11 @@ const defaultRuntimeBindings = {
     await Promise.resolve();
     return left + right;
   },
-  picorbWorkerKvGet: unavailableKvGet,
-  picorbWorkerKvSet: unavailableKvSet,
+  picorbWorkerKvGetBridge: unavailableHostBridge,
+  picorbWorkerKvPutBridge: unavailableHostBridge,
+  picorbWorkerQueueSendBridge: unavailableHostBridge,
+  picorbWorkerEnvGetBridge: unavailableEnvironmentBridge,
+  picorbWorkerEnvBindingTypeBridge: unavailableEnvironmentBridge,
 };
 
 export function mergeBindings(...bindingSets) {
@@ -51,22 +75,203 @@ export function mergeBindings(...bindingSets) {
   return bindings;
 }
 
-export function createCloudflareKvBindings(env) {
-  const namespace = env.PICORUBY_KV;
-  if (!namespace || typeof namespace.get !== "function" || typeof namespace.put !== "function") {
-    throw new Error("PICORUBY_KV binding is not configured");
-  }
+export function createCloudflareKvBindings(env, bindingTypes = {}) {
+  const types = normalizeBindingTypes(bindingTypes);
+  const get = async (bindingName, key) => {
+    const namespace = getKvNamespace(env, types, bindingName);
+    const value = await namespace.get(decodeKvKey(key), "arrayBuffer");
+    return value === null ? null : new Uint8Array(value);
+  };
+
+  const put = async (bindingName, key, value, options = {}) => {
+    const namespace = getKvNamespace(env, types, bindingName);
+    const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
+    await namespace.put(decodeKvKey(key), bytes.buffer, options);
+  };
 
   return {
-    picorbWorkerKvGet: async (key) => {
-      const value = await namespace.get(key, "arrayBuffer");
-      return value === null ? null : new Uint8Array(value);
+    picorbWorkerKvGetBridge: async (bindingName, key) => {
+      return await captureHostCall(async () => {
+        const value = await get(bindingName, key);
+        return value === null ? hostMissing() : hostOk(value);
+      });
     },
-    picorbWorkerKvSet: async (key, value) => {
-      const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
-      await namespace.put(key, bytes.buffer);
+    picorbWorkerKvPutBridge: async (bindingName, key, value, optionsJson = "{}") => {
+      return await captureHostCall(async () => {
+        const options = parseKvPutOptions(optionsJson);
+        await put(bindingName, key, value, options);
+        return hostOk(new Uint8Array());
+      });
     },
   };
+}
+
+function decodeKvKey(key) {
+  if (typeof key === "string") return key;
+  try {
+    return strictDecoder.decode(key);
+  } catch {
+    throw new HostArgumentError("Cloudflare KV key must be valid UTF-8");
+  }
+}
+
+function parseKvPutOptions(optionsJson) {
+  let options;
+  try {
+    options = JSON.parse(optionsJson);
+  } catch {
+    throw new HostProtocolError("Cloudflare KV put options contain invalid JSON");
+  }
+  if (options === null || typeof options !== "object" || Array.isArray(options)) {
+    throw new HostArgumentError("Cloudflare KV put options must be a JSON object");
+  }
+  for (const name of Object.keys(options)) {
+    if (name !== "ttl") throw new HostArgumentError(`Unknown Cloudflare KV put option: ${name}`);
+  }
+  if (!Object.hasOwn(options, "ttl")) return {};
+  if (!Number.isSafeInteger(options.ttl) || options.ttl < 60) {
+    throw new HostArgumentError("Cloudflare KV ttl must be a safe integer of at least 60 seconds");
+  }
+  return { expirationTtl: options.ttl };
+}
+
+export function createCloudflareQueueBindings(env, bindingTypes = {}) {
+  const types = normalizeBindingTypes(bindingTypes);
+  return {
+    picorbWorkerQueueSendBridge: async (bindingName, message) => {
+      return await captureHostCall(async () => {
+        const queue = getQueue(env, types, bindingName);
+        const body = decodeQueueMessage(message);
+        await queue.send(body, { contentType: "text" });
+        return hostOk(new Uint8Array());
+      });
+    },
+  };
+}
+
+function decodeQueueMessage(message) {
+  try {
+    return strictDecoder.decode(message);
+  } catch {
+    throw new HostArgumentError("Cloudflare Queue message must be valid UTF-8");
+  }
+}
+
+function getKvNamespace(env, bindingTypes, bindingName) {
+  if (typeof bindingName !== "string" || bindingName.length === 0) {
+    throw new HostArgumentError("Cloudflare KV binding name must be a non-empty string");
+  }
+
+  requireBindingType(bindingTypes, bindingName, "kv");
+  const namespace = env[bindingName];
+  if (!namespace || typeof namespace.get !== "function" || typeof namespace.put !== "function") {
+    throw new HostBindingError(`Cloudflare KV binding ${bindingName} is not configured`);
+  }
+  return namespace;
+}
+
+function getQueue(env, bindingTypes, bindingName) {
+  if (typeof bindingName !== "string" || bindingName.length === 0) {
+    throw new HostArgumentError("Cloudflare Queue binding name must be a non-empty string");
+  }
+
+  requireBindingType(bindingTypes, bindingName, "queue");
+  const queue = env[bindingName];
+  if (!queue || typeof queue.send !== "function") {
+    throw new HostBindingError(`Cloudflare Queue binding ${bindingName} is not configured`);
+  }
+  return queue;
+}
+
+function isJsonValue(value) {
+  if (value === null || typeof value === "number" || typeof value === "boolean") return true;
+  if (Array.isArray(value)) return true;
+  return typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function isResourceBinding(value) {
+  return value && typeof value === "object" && (
+    typeof value.get === "function" ||
+    typeof value.put === "function" ||
+    typeof value.send === "function" ||
+    typeof value.fetch === "function"
+  );
+}
+
+function readEnvironmentValue(env, key) {
+  if (typeof key !== "string" || key.length === 0) {
+    throw new HostArgumentError("Environment variable name must be a non-empty string");
+  }
+
+  const value = env[key];
+  if (value === undefined) return missingEnvironmentValue;
+  if (typeof value === "string") return value;
+  if (isResourceBinding(value)) return missingEnvironmentValue;
+  if (isJsonValue(value)) return value;
+  return missingEnvironmentValue;
+}
+
+function readBindingType(env, bindingTypes, key) {
+  if (typeof key !== "string" || key.length === 0) {
+    throw new HostArgumentError("Cloudflare binding name must be a non-empty string");
+  }
+
+  return env[key] === undefined ? null : bindingTypes[key] ?? null;
+}
+
+export function createEnvironmentBindings(env, bindingTypes = {}) {
+  const types = normalizeBindingTypes(bindingTypes);
+  return {
+    picorbWorkerEnvGetBridge: (key) => {
+      return captureHostCallSync(() => {
+        const value = readEnvironmentValue(env, key);
+        return value === missingEnvironmentValue
+          ? hostMissing()
+          : hostOk(utf8(JSON.stringify(value)));
+      });
+    },
+    picorbWorkerEnvBindingTypeBridge: (key) => {
+      return captureHostCallSync(() => {
+        const type = readBindingType(env, types, key);
+        return type === null ? hostMissing() : hostOk(utf8(type));
+      });
+    },
+  };
+}
+
+export function createCloudflareBindings(env, bindingTypes) {
+  const types = normalizeBindingTypes(bindingTypes);
+  return mergeBindings(
+    createCloudflareKvBindings(env, types),
+    createCloudflareQueueBindings(env, types),
+    createEnvironmentBindings(env, types),
+  );
+}
+
+function normalizeBindingTypes(bindingTypes) {
+  if (!bindingTypes || typeof bindingTypes !== "object" || Array.isArray(bindingTypes)) {
+    throw new TypeError("Cloudflare binding types must be an object");
+  }
+  const normalized = Object.create(null);
+  for (const [name, type] of Object.entries(bindingTypes)) {
+    if (typeof name !== "string" || name.length === 0) {
+      throw new TypeError("Cloudflare binding type contains an invalid name");
+    }
+    if (type !== "kv" && type !== "queue") {
+      throw new TypeError(`Unsupported Cloudflare binding type for ${name}: ${type}`);
+    }
+    normalized[name] = type;
+  }
+  return normalized;
+}
+
+function requireBindingType(bindingTypes, bindingName, expectedType) {
+  const actualType = bindingTypes[bindingName];
+  if (actualType === expectedType) return;
+  if (actualType === undefined) {
+    throw new HostBindingError(`Cloudflare binding ${bindingName} is not registered`);
+  }
+  throw new HostBindingError(`Cloudflare binding ${bindingName} is registered as ${actualType}, not ${expectedType}`);
 }
 
 class FrameWriter {
@@ -292,6 +497,9 @@ export async function createRuntime(createPicoRuby, wasmModule, appBytecode, run
 }
 
 export async function closeRuntime(module) {
+  const pendingDispatch = dispatchQueues.get(module);
+  if (pendingDispatch) await pendingDispatch.catch(() => {});
+
   await module.ccall(
     "picorb_worker_close",
     null,
@@ -317,7 +525,21 @@ export async function handleRequest(
   }
 }
 
-export async function dispatch(module, request, requestOptions = {}) {
+export function dispatch(module, request, requestOptions = {}) {
+  const previousDispatch = dispatchQueues.get(module) ?? Promise.resolve();
+  const currentDispatch = previousDispatch
+    .catch(() => {})
+    .then(() => dispatchOnce(module, request, requestOptions));
+  dispatchQueues.set(module, currentDispatch);
+
+  return currentDispatch.finally(() => {
+    if (dispatchQueues.get(module) === currentDispatch) {
+      dispatchQueues.delete(module);
+    }
+  });
+}
+
+async function dispatchOnce(module, request, requestOptions) {
   const frame = await encodeRackRequest(request, requestOptions);
   const pointer = copyToWasm(module, frame);
   try {

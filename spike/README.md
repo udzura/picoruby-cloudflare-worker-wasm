@@ -10,8 +10,20 @@ configuration.
 ## Prerequisites
 
 - A PicoRuby source checkout compatible with this gem
-- Emscripten 5.0.7 (`spike/.emscripten-version` is checked before a build)
+- Emscripten >= 5.0.0 (checked before a build)
 - Node.js and npm
+
+On macOS, install Emscripten via Homebrew:
+
+```sh
+brew install emscripten
+export PATH="$(brew --prefix emscripten)/bin:$PATH"
+emcc --version
+```
+
+If switching from emsdk, use a shell without `emsdk_env.sh` and unset
+`EMSDK`, `EM_CONFIG`, and `EM_CACHE` to avoid mixing toolchains.
+The version check accepts 5.0.0 and later; this does not mean every version has been tested.
 
 Install Worker development dependencies, point the project at PicoRuby, and
 build the runtime:
@@ -93,13 +105,9 @@ The example defines `App < Sinatra::Base` and registers it with
 - any method at `/debug/request`, which dumps the Rack request state
 - any method at `/debug/raise`, which raises a dummy application exception
 - `GET /debug/jspi`, which suspends and resumes Ruby twice through JSPI
-- any method at `/kv/set`, which writes the fixed `spike-key` KV sample value
-- any method at `/kv/get`, which reads the fixed `spike-key` KV sample value
-
-`wrangler.jsonc` binds one namespace as `PICORUBY_KV`. Use local development
-when exercising the sample write endpoint. To verify the binary-safe
-`Cloudflare::KV.set/get` bridge against Wrangler's local KV implementation,
-select `test/kv_app.rb` as the Ruby entrypoint:
+`wrangler.jsonc` binds one namespace as `CACHE_KV`. To verify the binary-safe
+named-binding API against Wrangler's local KV implementation, select
+`test/kv_app.rb` as the Ruby entrypoint:
 
 ```console
 PICORUBY_APP=test/kv_app.rb npm run dev
@@ -108,13 +116,24 @@ curl http://localhost:8787/kv/set
 curl http://localhost:8787/kv/get
 ```
 
-See [Cloudflare KV](../docs/cloudflare-kv.md) for the Ruby API and its current
-limits.
+See [Cloudflare KV](../docs/cloudflare-kv.md) and
+[Cloudflare environment values](../docs/cloudflare-env.md), and
+[Cloudflare Queues](../docs/cloudflare-queue.md) for the Ruby API and its
+current limits.
 
 ## Host binding factories
 
-`handleRequest` accepts any number of binding fragments. Each factory captures
-the current Worker `env` and returns only the Emscripten callbacks it owns:
+`wrangler.jsonc` is the source of truth for resource binding types. Generate
+the checked-in registry after adding or changing KV or Queue bindings:
+
+```console
+npm run generate:bindings
+```
+
+`npm run build` regenerates it, while `npm test` rejects a stale generated
+file. The registry contains names and types only; variables, secret names, and
+all values are omitted. Pass it to the unified factory, which captures the
+current Worker `env` and creates the Emscripten callbacks:
 
 ```js
 handleRequest(
@@ -122,13 +141,17 @@ handleRequest(
   picoRubyWasm,
   appBytecode,
   request,
-  createFetchBindings(env),
-  createCloudflareKvBindings(env),
-  createCloudflareD1Bindings(env),
+  createCloudflareBindings(env, cloudflareBindingTypes),
 );
 ```
 
-Callback names use the `picorbWorker` prefix. Duplicate names are rejected, so
+For an environment-specific Wrangler section, the generator also accepts
+`--env NAME`. Resource binding sections are not inherited from the top-level
+configuration, matching Wrangler's environment model.
+
+The runtime does not infer a resource type from methods such as `get` and
+`put`; unregistered resources are rejected. Callback names use the
+`picorbWorker` prefix. Duplicate names are rejected, so
 a later binding cannot silently replace an existing host operation. HTTP body
 limits remain `dispatch` request options and are not binding callbacks.
 
@@ -139,10 +162,15 @@ limit, per-request VM creation, and JSPI suspension/resumption.
 
 The Worker creates a fresh PicoRuby VM for each request. JavaScript buffers each
 Request asynchronously, then Ruby dispatch and response generation are
-synchronous except for JSPI-backed host calls.
-`/debug/jspi` is only a feasibility probe; production Cloudflare binding
-adapters other than KV and rejection-to-Ruby-exception mapping remain outside
-this spike.
+synchronous except for JSPI-backed host calls. The common host bridge carries
+success, missing values, and host errors in one binary result frame; rejected
+KV and Queue Promises become `Cloudflare::HostError` in Ruby. Each Rack env has
+a `cloudflare.env` proxy for KV, Queue, variables, and secrets. `ENV` retains a
+direct scalar-value bypass because Worker `env` is already available for the
+request.
+
+`/debug/jspi` is only a feasibility probe. Fetch, Access, and other
+Cloudflare binding adapters remain outside this spike.
 
 The current `picoruby-sinatra-covers` scope intentionally disables sessions,
 rack-protection, logging middleware, static files, templates, and development

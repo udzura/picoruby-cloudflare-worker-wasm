@@ -10,21 +10,21 @@ BUILD_CONFIG = File.join(SPIKE_ROOT, "build_config", "picoruby-worker-wasm.rb")
 DIST_DIR = File.join(SPIKE_ROOT, "dist")
 APP_SOURCE = File.expand_path(ENV.fetch("PICORUBY_APP", "lib/app.rb"), SPIKE_ROOT)
 KV_TEST_APP_SOURCE = File.join(SPIKE_ROOT, "test", "kv_app.rb")
+BINDINGS_TEST_APP_SOURCE = File.join(SPIKE_ROOT, "test", "bindings_app.rb")
 WORKER_WASM_REVISION = ENV.fetch("PICORUBY_WORKER_WASM_REV", "939022a7d2c77acb3b2d456c8ebbcb54a17a9aca")
 
 abort "PicoRuby Rakefile was not found: #{PICORUBY_RAKEFILE}" unless File.file?(PICORUBY_RAKEFILE)
 
 def verify_emscripten!
-  expected = File.read(File.join(SPIKE_ROOT, ".emscripten-version")).strip
   output, status = Open3.capture2e("emcc", "--version")
-  abort "emcc was not found. Activate emsdk #{expected} first." unless status.success?
+  abort "emcc failed: #{output}; see README for brew install emscripten and PATH setup." unless status.success?
 
-  actual = output[/\bemcc .*?\s(\d+\.\d+\.\d+)\s\(/, 1]
-  return if actual == expected
+  actual = output[/emcc.*? (\d+\.\d+\.\d+)/, 1]
+  return if actual && actual.split('.').first.to_i >= 5
 
-  abort "Emscripten #{expected} is required (found #{actual || "unknown"})."
+  abort "Emscripten >= 5.0.0 is required (found #{actual || "unknown"}); see README for brew install emscripten and PATH setup."
 rescue Errno::ENOENT
-  abort "emcc was not found. Activate emsdk #{expected} first."
+  abort "emcc was not found. On macOS, run brew install emscripten and add its bin directory to PATH (see README)."
 end
 
 def build_runtime!
@@ -68,6 +68,10 @@ def compile_kv_test_app!
   compile_ruby_app!(KV_TEST_APP_SOURCE, File.join(DIST_DIR, "kv_app.bin"))
 end
 
+def compile_bindings_test_app!
+  compile_ruby_app!(BINDINGS_TEST_APP_SOURCE, File.join(DIST_DIR, "bindings_app.bin"))
+end
+
 def stage_runtime!
   runtime_dir = File.join(PICORUBY_ROOT, "build", "picoruby-worker-wasm", "bin")
   %w[picoruby-worker.js picoruby-worker.wasm].each do |artifact|
@@ -83,6 +87,7 @@ task :build do
   build_runtime!
   compile_app!
   compile_kv_test_app!
+  compile_bindings_test_app!
   stage_runtime!
 end
 
