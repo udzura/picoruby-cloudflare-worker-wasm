@@ -9,6 +9,17 @@ MRuby::Gem::Specification.new("picoruby-worker-wasm") do |spec|
   spec.add_conflict "picoruby-wasm"
   spec.add_dependency "picoruby-json"
 
+  spec.build_settings do |gem|
+    prism_include = File.join(
+      File.dirname(gem.build.build_dir), "prism", "include"
+    )
+
+    gem.build.cc.include_paths << prism_include
+    gem.build.gems.each do |dependency|
+      dependency.cc.include_paths << prism_include
+    end
+  end
+
   bin_dir = File.join(build.build_dir, "bin")
   output_js = File.join(bin_dir, "picoruby-worker.js")
   exported_functions = %w[
