@@ -131,6 +131,23 @@ EM_ASYNC_JS(int, picorb_worker_queue_send_bridge,
   return 0;
 });
 
+EM_ASYNC_JS(int, picorb_worker_fetch_bridge,
+            (const char *url_ptr, int url_len, const char *options_ptr, int options_len,
+             uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr), {
+  const frame = await Module["picorbWorkerFetchBridge"](
+    UTF8ToString(url_ptr, url_len),
+    UTF8ToString(options_ptr, options_len),
+  );
+  if (!(frame instanceof Uint8Array)) return -1;
+  const frameLen = frame.byteLength;
+  const framePtr = frameLen > 0 ? Module._malloc(frameLen) : 0;
+  if (frameLen > 0 && framePtr === 0) return -2;
+  if (frameLen > 0) HEAPU8.set(frame, framePtr);
+  HEAPU32[frame_ptr_ptr >>> 2] = framePtr;
+  HEAPU32[frame_len_ptr >>> 2] = frameLen;
+  return 0;
+});
+
 EM_JS(int, picorb_worker_env_get_bridge,
        (const char *key_ptr, int key_len, uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr), {
   const frame = Module["picorbWorkerEnvGetBridge"](UTF8ToString(key_ptr, key_len));
@@ -380,6 +397,43 @@ mrb_cloudflare_queue_send(mrb_state *mrb, mrb_value self)
   }
   free((void *)frame_ptr);
   return mrb_nil_value();
+}
+
+static mrb_value
+mrb_cloudflare_fetch(mrb_state *mrb, mrb_value self)
+{
+  (void)self;
+  const char *url;
+  const char *options;
+  mrb_int url_len;
+  mrb_int options_len;
+  mrb_get_args(mrb, "ss", &url, &url_len, &options, &options_len);
+  if (url_len <= 0 || url_len > 8192 || options_len <= 0 || options_len > 1048576 ||
+      memchr(url, '\0', url_len) || memchr(options, '\0', options_len)) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid Cloudflare fetch URL or options");
+  }
+  uintptr_t frame_ptr = 0;
+  uint32_t frame_len = 0;
+  int status = picorb_worker_fetch_bridge(url, (int)url_len, options, (int)options_len,
+                                         (uintptr_t)&frame_ptr, (uintptr_t)&frame_len);
+  if (status < 0) {
+    raise_cloudflare_error(mrb, "ProtocolError", "Cloudflare fetch bridge failed");
+  }
+  picorb_worker_host_result result;
+  if (!decode_host_result((const uint8_t *)frame_ptr, frame_len, &result)) {
+    free((void *)frame_ptr);
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare fetch host result");
+  }
+  if (result.kind >= PICORB_WORKER_HOST_ERROR) {
+    raise_host_result_error(mrb, &result, frame_ptr);
+  }
+  if (result.kind != PICORB_WORKER_HOST_OK) {
+    free((void *)frame_ptr);
+    raise_cloudflare_error(mrb, "ProtocolError", "missing Cloudflare fetch response");
+  }
+  mrb_value response = mrb_str_new(mrb, (const char *)result.payload, result.payload_len);
+  free((void *)frame_ptr);
+  return response;
 }
 
 static mrb_value
@@ -806,6 +860,8 @@ mrb_picoruby_worker_wasm_gem_init(mrb_state *mrb)
   mrb_define_module_function(mrb, cloudflare, "__kv_get", mrb_cloudflare_kv_get, MRB_ARGS_REQ(2));
   mrb_define_module_function(mrb, cloudflare, "__kv_put", mrb_cloudflare_kv_set, MRB_ARGS_REQ(4));
   mrb_define_module_function(mrb, cloudflare, "__queue_send", mrb_cloudflare_queue_send, MRB_ARGS_REQ(2));
+  mrb_define_module_function(mrb, cloudflare, "__fetch", mrb_cloudflare_fetch,
+                             MRB_ARGS_REQ(2));
   mrb_define_module_function(mrb, cloudflare, "__env_get_raw", mrb_cloudflare_env_get, MRB_ARGS_REQ(1));
   mrb_define_module_function(mrb, cloudflare, "__warn_env_mutation", mrb_cloudflare_warn_env_mutation,
                              MRB_ARGS_NONE());

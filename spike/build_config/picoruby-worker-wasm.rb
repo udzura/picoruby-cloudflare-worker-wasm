@@ -30,6 +30,7 @@ MRuby::CrossBuild.new("picoruby-worker-wasm") do |conf|
   mruby_gems = File.join(MRUBY_ROOT, "mrbgems", "picoruby-mruby", "lib", "mruby", "mrbgems")
   %w[
     mruby-array-ext
+    mruby-pack
     mruby-catch
     mruby-class-ext
     mruby-enum-ext
