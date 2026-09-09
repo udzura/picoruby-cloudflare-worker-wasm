@@ -20,14 +20,19 @@ response through the existing host-result protocol. It knows nothing about Acces
 JWTs or identity JSON.
 
 Only HTTP(S) URLs without embedded credentials are accepted. Redirects are not
-followed, requests time out after ten seconds, and response bodies are limited to
+followed: requests use `redirect: "manual"` and all 3xx responses are rejected.
+Requests time out after ten seconds, and response bodies are limited to
 1 MiB. The C boundary limits URLs to 8192 bytes and encoded options to 1 MiB.
 This interface does not implement streaming or binary bodies.
 `mruby-pack` is required for control-character escapes in PicoRuby's JSON parser.
 
 Invalid request arguments raise `ArgumentError`. Network failures, redirects,
-invalid UTF-8 and oversized responses raise `Cloudflare::HostError`.
-Error messages omit URLs, credentials and response bodies.
+and oversized responses raise `Cloudflare::HostError`; invalid UTF-8 raises
+`Cloudflare::ProtocolError`. Error messages identify validation, request
+construction, network, response-size or decoding failures without including
+URLs, credentials, raw exception messages or response bodies.
 
 Run `node spike/test/fetch.mjs` for transport checks. The template integration
 suite also exercises POST headers/body and responses through Wasm.
+Run `node spike/test/fetch-workerd.mjs` after installing the spike's dependencies
+to check Request construction and redirect rejection inside workerd.
