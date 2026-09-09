@@ -45,9 +45,11 @@ contract, limits, `Rack::Lint` results, and asynchronous roadmap.
   host calls during Ruby dispatch;
 - named Cloudflare KV bindings with binary-safe `get` and `put` (`set`), optional `ttl:`, using JSPI;
 - Cloudflare Queue text-message producers using JSPI;
+- buffered HTTP(S) text fetch using JSPI (see [fetch API](docs/cloudflare-fetch.md));
+- Cloudflare Access Rack middleware (see [Access API](docs/cloudflare-access.md));
 - read-only Cloudflare text, JSON, and secret values through `ENV`;
 - request-scoped Worker binding access through Rack `cloudflare.env`;
-- no filesystem, sockets, runtime Ruby compilation, fetch, Access,
+- no filesystem, sockets, runtime Ruby compilation,
   other Cloudflare binding adapters, or streaming bodies.
 
 `mruby-task` remains linked because it is required by `picoruby-mruby`, but the

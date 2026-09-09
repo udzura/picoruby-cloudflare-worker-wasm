@@ -169,7 +169,11 @@ a `cloudflare.env` proxy for KV, Queue, variables, and secrets. `ENV` retains a
 direct scalar-value bypass because Worker `env` is already available for the
 request.
 
-`/debug/jspi` is only a feasibility probe. Fetch, Access, and other
+`Rack::Cloudflare::Access` is [Access middleware](../docs/cloudflare-access.md).
+The Ruby helper uses the generic [fetch wrapper](../docs/cloudflare-fetch.md).
+Run `node test/fetch.mjs` for the host bridge tests.
+
+`/debug/jspi` is only a feasibility probe. Streaming fetch and other
 Cloudflare binding adapters remain outside this spike.
 
 The current `picoruby-sinatra-covers` scope intentionally disables sessions,

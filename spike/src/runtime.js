@@ -49,6 +49,7 @@ const defaultRuntimeBindings = {
   picorbWorkerKvGetBridge: unavailableHostBridge,
   picorbWorkerKvPutBridge: unavailableHostBridge,
   picorbWorkerQueueSendBridge: unavailableHostBridge,
+  picorbWorkerFetchBridge: unavailableHostBridge,
   picorbWorkerEnvGetBridge: unavailableEnvironmentBridge,
   picorbWorkerEnvBindingTypeBridge: unavailableEnvironmentBridge,
 };
@@ -239,11 +240,51 @@ export function createEnvironmentBindings(env, bindingTypes = {}) {
   };
 }
 
+export function createFetchBindings(fetcher = (...args) => globalThis.fetch(...args)) {
+  return {
+    picorbWorkerFetchBridge: async (url, optionsJson = "{}") => captureHostCall(async () => {
+      let options;
+      try {
+        options = JSON.parse(optionsJson);
+      } catch {
+        throw new HostProtocolError("Cloudflare fetch options contain invalid JSON");
+      }
+      if (!options || typeof options !== "object" || Array.isArray(options) ||
+          Object.keys(options).some(key => !["method", "headers", "body"].includes(key)) ||
+          (options.method !== undefined && typeof options.method !== "string") ||
+          (options.body !== undefined && typeof options.body !== "string") ||
+          (options.headers !== undefined && (!options.headers || typeof options.headers !== "object" ||
+            Array.isArray(options.headers) || Object.values(options.headers).some(value => typeof value !== "string")))) {
+        throw new HostArgumentError("Invalid Cloudflare fetch options");
+      }
+      let request;
+      try {
+        if (typeof url !== "string" || url.includes("\0")) throw new Error();
+        request = new Request(url, { ...options, redirect: "error", signal: AbortSignal.timeout(10000) });
+        if (!["http:", "https:"].includes(new URL(request.url).protocol)) throw new Error();
+      } catch {
+        throw new HostArgumentError("Invalid Cloudflare fetch request");
+      }
+      try {
+        const response = await fetcher(request);
+        const bytes = await readRequestBody(response, 1024 * 1024);
+        return hostOk(utf8(JSON.stringify({
+          status: response.status, headers: Object.fromEntries(response.headers),
+          body: strictDecoder.decode(bytes),
+        })));
+      } catch {
+        throw new Error("Cloudflare fetch failed");
+      }
+    }),
+  };
+}
+
 export function createCloudflareBindings(env, bindingTypes) {
   const types = normalizeBindingTypes(bindingTypes);
   return mergeBindings(
     createCloudflareKvBindings(env, types),
     createCloudflareQueueBindings(env, types),
+    createFetchBindings(),
     createEnvironmentBindings(env, types),
   );
 }

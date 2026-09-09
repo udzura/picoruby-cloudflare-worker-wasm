@@ -633,6 +633,93 @@ module Cloudflare
     end
   end
 
+  class AccessIdentity
+    attr_reader :raw_data
+
+    def initialize(raw_data)
+      raise ProtocolError, "Cloudflare Access identity must be an object" unless raw_data.is_a?(Hash)
+      @raw_data = raw_data
+    end
+
+    def email
+      @raw_data["email"]
+    end
+
+    def user_uuid
+      @raw_data["user_uuid"]
+    end
+  end
+
+  class FetchResponse
+    attr_reader :status, :headers, :body
+
+    def initialize(data)
+      @status = data["status"]
+      @headers = data["headers"]
+      @body = data["body"]
+    end
+  end
+
+  def self.fetch(url, method: "GET", headers: {}, body: nil)
+    options = { method: method, headers: headers }
+    options[:body] = body unless body.nil?
+    FetchResponse.new(JSON.parse(__fetch(url, JSON.generate(options))))
+  rescue JSON::JSONError
+    raise ProtocolError, "Cloudflare fetch response is not valid JSON"
+  end
+
+  class Access
+    class Unauthorized < StandardError; end
+
+    def initialize(app, team: nil)
+      @app = app
+      @team = team
+    end
+
+    def call(env)
+      env.delete("cloudflare.identity")
+      team = @team || Environment.from_rack(env)["CF_ACCESS_TEAM"]
+      return response(503, "Set CF_ACCESS_TEAM to your Access team name.") unless self.class.valid_team?(team)
+      token = ::Rack::Request.new(env).cookies["CF_Authorization"]
+      return response(401, "Cloudflare Access authorization cookie is required.") if !token || token.empty?
+
+      begin
+        env["cloudflare.identity"] = self.class.get_identity(token, team: team)
+      rescue Unauthorized, ArgumentError
+        return response(401, "Cloudflare Access authorization failed.")
+      rescue HostError, ProtocolError
+        return response(502, "Cloudflare Access identity lookup failed.")
+      end
+      @app.call(env)
+    end
+
+    def self.get_identity(token, team:)
+      unless valid_team?(team)
+        raise ArgumentError, "Cloudflare Access team must be a team name, not a URL"
+      end
+      unless token.is_a?(String) && token.bytesize > 0 && token.bytesize <= 16384 && /\A[A-Za-z0-9_.-]+\z/.match?(token)
+        raise ArgumentError, "Invalid Cloudflare Access authorization token"
+      end
+      result = Cloudflare.fetch("https://#{team}.cloudflareaccess.com/cdn-cgi/access/get-identity",
+                                headers: { "Cookie" => "CF_Authorization=#{token}" })
+      raise Unauthorized, "Cloudflare Access authorization failed" if result.status == 401 || result.status == 403
+      raise HostError, "Cloudflare Access identity request returned HTTP #{result.status}" unless result.status >= 200 && result.status < 300
+      AccessIdentity.new(JSON.parse(result.body))
+    rescue JSON::JSONError
+      raise ProtocolError, "Cloudflare Access identity response is not valid JSON"
+    end
+
+    def self.valid_team?(team)
+      team.is_a?(String) && team.bytesize <= 63 && /\A[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\z/.match?(team)
+    end
+
+    private
+
+    def response(status, message)
+      [status, { "content-type" => "text/plain; charset=utf-8" }, [message + "\n"]]
+    end
+  end
+
   class EnvironmentVariables
     def initialize
       __cloudflare_reset
@@ -777,3 +864,12 @@ end
 
 Object.__send__(:remove_const, :ENV) if Object.const_defined?(:ENV)
 ENV = Cloudflare::EnvironmentVariables.new
+
+if Object.const_defined?(:Rack)
+  module Rack
+    module Cloudflare
+      Access = ::Cloudflare::Access
+      AccessIdentity = ::Cloudflare::AccessIdentity
+    end
+  end
+end
