@@ -249,32 +249,70 @@ export function createFetchBindings(fetcher = (...args) => globalThis.fetch(...a
       } catch {
         throw new HostProtocolError("Cloudflare fetch options contain invalid JSON");
       }
-      if (!options || typeof options !== "object" || Array.isArray(options) ||
-          Object.keys(options).some(key => !["method", "headers", "body"].includes(key)) ||
-          (options.method !== undefined && typeof options.method !== "string") ||
-          (options.body !== undefined && typeof options.body !== "string") ||
-          (options.headers !== undefined && (!options.headers || typeof options.headers !== "object" ||
-            Array.isArray(options.headers) || Object.values(options.headers).some(value => typeof value !== "string")))) {
-        throw new HostArgumentError("Invalid Cloudflare fetch options");
+      if (!options || typeof options !== "object" || Array.isArray(options)) {
+        throw new HostArgumentError("Cloudflare fetch options must be an object");
+      }
+      if (Object.keys(options).some(key => !["method", "headers", "body"].includes(key))) {
+        throw new HostArgumentError("Cloudflare fetch options contain an unsupported field");
+      }
+      if (options.method !== undefined && typeof options.method !== "string") {
+        throw new HostArgumentError("Cloudflare fetch method must be a string");
+      }
+      if (options.body !== undefined && typeof options.body !== "string") {
+        throw new HostArgumentError("Cloudflare fetch body must be a string");
+      }
+      if (options.headers !== undefined && (!options.headers || typeof options.headers !== "object" ||
+          Array.isArray(options.headers) || Object.values(options.headers).some(value => typeof value !== "string"))) {
+        throw new HostArgumentError("Cloudflare fetch headers must be an object with string values");
+      }
+      let target;
+      try {
+        if (typeof url !== "string" || url.includes("\0")) throw new Error();
+        target = new URL(url);
+      } catch {
+        throw new HostArgumentError("Cloudflare fetch URL must be a valid absolute URL without NUL bytes");
+      }
+      if (!["http:", "https:"].includes(target.protocol)) {
+        throw new HostArgumentError("Cloudflare fetch URL must use HTTP or HTTPS");
+      }
+      if (target.username || target.password) {
+        throw new HostArgumentError("Cloudflare fetch URL must not contain credentials");
       }
       let request;
       try {
-        if (typeof url !== "string" || url.includes("\0")) throw new Error();
-        request = new Request(url, { ...options, redirect: "error", signal: AbortSignal.timeout(10000) });
-        if (!["http:", "https:"].includes(new URL(request.url).protocol)) throw new Error();
+        // workerd does not support redirect: "error". Reject redirects below instead.
+        request = new Request(url, { ...options, redirect: "manual", signal: AbortSignal.timeout(10000) });
       } catch {
-        throw new HostArgumentError("Invalid Cloudflare fetch request");
+        throw new HostArgumentError("Cloudflare fetch request construction failed; check method, headers and body compatibility");
       }
+      let response;
       try {
-        const response = await fetcher(request);
-        const bytes = await readRequestBody(response, 1024 * 1024);
-        return hostOk(utf8(JSON.stringify({
-          status: response.status, headers: Object.fromEntries(response.headers),
-          body: strictDecoder.decode(bytes),
-        })));
+        response = await fetcher(request);
       } catch {
-        throw new Error("Cloudflare fetch failed");
+        throw new Error("Cloudflare fetch network request failed or timed out");
       }
+      if (response.status >= 300 && response.status < 400) {
+        if (response.body) await response.body.cancel().catch(() => {});
+        throw new Error(`Cloudflare fetch redirect response rejected (HTTP ${response.status})`);
+      }
+      let bytes;
+      try {
+        bytes = await readRequestBody(response, 1024 * 1024);
+      } catch (error) {
+        if (error instanceof RequestBodyTooLargeError) {
+          throw new Error("Cloudflare fetch response body exceeds the 1 MiB limit");
+        }
+        throw new Error("Cloudflare fetch response body read failed or timed out");
+      }
+      let body;
+      try {
+        body = strictDecoder.decode(bytes);
+      } catch {
+        throw new HostProtocolError("Cloudflare fetch response body is not valid UTF-8");
+      }
+      return hostOk(utf8(JSON.stringify({
+        status: response.status, headers: Object.fromEntries(response.headers), body,
+      })));
     }),
   };
 }
