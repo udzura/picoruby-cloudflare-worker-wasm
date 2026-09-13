@@ -6,6 +6,7 @@
 #include <mruby/dump.h>
 #include <mruby/error.h>
 #include <mruby/gc.h>
+#include <mruby/numeric.h>
 #include <mruby/proc.h>
 #include <mruby/string.h>
 #include <mruby/variable.h>
@@ -28,6 +29,9 @@
 #define PICORB_WORKER_MAX_KV_VALUE_SIZE (8u * 1024u * 1024u)
 #define PICORB_WORKER_MAX_QUEUE_MESSAGE_SIZE (128u * 1024u)
 #define PICORB_WORKER_MAX_ENV_NAME_SIZE 1024u
+#define PICORB_WORKER_MAX_CRYPTO_DATA_SIZE (8u * 1024u * 1024u)
+#define PICORB_WORKER_AES_GCM_IV_SIZE 12u
+#define PICORB_WORKER_AES_GCM_TAG_SIZE 16u
 #define PICORB_WORKER_HOST_RESULT_MAGIC "PHB1"
 #define PICORB_WORKER_HOST_RESULT_HEADER_SIZE 12u
 
@@ -148,6 +152,52 @@ EM_ASYNC_JS(int, picorb_worker_fetch_bridge,
   return 0;
 });
 
+EM_JS(int, picorb_worker_random_bytes,
+      (uint8_t *output_ptr, int output_len), {
+  if (!globalThis.crypto || typeof globalThis.crypto.getRandomValues !== "function") return -1;
+  try {
+    for (let offset = 0; offset < output_len; offset += 65536) {
+      globalThis.crypto.getRandomValues(
+        HEAPU8.subarray(output_ptr + offset, output_ptr + Math.min(offset + 65536, output_len)),
+      );
+    }
+    return 0;
+  } catch {
+    return -1;
+  }
+});
+
+EM_ASYNC_JS(int, picorb_worker_aes_gcm_bridge,
+            (int encrypt, const uint8_t *secret_ptr, int secret_len,
+             const uint8_t *iv_ptr, int iv_len, const uint8_t *data_ptr, int data_len,
+             uintptr_t output_ptr_ptr, uintptr_t output_len_ptr), {
+  if (!globalThis.crypto || !globalThis.crypto.subtle ||
+      typeof globalThis.crypto.getRandomValues !== "function") return -1;
+  try {
+    const secret = HEAPU8.slice(secret_ptr, secret_ptr + secret_len);
+    const data = HEAPU8.slice(data_ptr, data_ptr + data_len);
+    const iv = encrypt
+      ? globalThis.crypto.getRandomValues(new Uint8Array(12))
+      : HEAPU8.slice(iv_ptr, iv_ptr + iv_len);
+    const key = await globalThis.crypto.subtle.importKey(
+      "raw", secret, { name: "AES-GCM" }, false, [encrypt ? "encrypt" : "decrypt"],
+    );
+    const result = new Uint8Array(await globalThis.crypto.subtle[encrypt ? "encrypt" : "decrypt"](
+      { name: "AES-GCM", iv }, key, data,
+    ));
+    const outputLen = result.byteLength + (encrypt ? iv.byteLength : 0);
+    const outputPtr = outputLen > 0 ? Module._malloc(outputLen) : 0;
+    if (outputLen > 0 && outputPtr === 0) return -2;
+    if (encrypt) HEAPU8.set(iv, outputPtr);
+    HEAPU8.set(result, outputPtr + (encrypt ? iv.byteLength : 0));
+    HEAPU32[output_ptr_ptr >>> 2] = outputPtr;
+    HEAPU32[output_len_ptr >>> 2] = outputLen;
+    return 0;
+  } catch {
+    return -3;
+  }
+});
+
 EM_JS(int, picorb_worker_env_get_bridge,
        (const char *key_ptr, int key_len, uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr), {
   const frame = Module["picorbWorkerEnvGetBridge"](UTF8ToString(key_ptr, key_len));
@@ -182,6 +232,124 @@ mrb_jspi_probe_add(mrb_state *mrb, mrb_value self)
   mrb_int right;
   mrb_get_args(mrb, "ii", &left, &right);
   return mrb_int_value(mrb, picorb_worker_jspi_add((int)left, (int)right));
+}
+
+static void
+validate_aes_gcm_secret(mrb_state *mrb, mrb_int secret_len)
+{
+  if (secret_len != 16 && secret_len != 24 && secret_len != 32) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "AES_GCM secret must be 16, 24, or 32 bytes");
+  }
+}
+
+static void
+validate_aes_gcm_cipher(mrb_state *mrb, mrb_value cipher)
+{
+  if (!mrb_symbol_p(cipher) || mrb_symbol(cipher) != MRB_SYM(AES_GCM)) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "only :AES_GCM is supported");
+  }
+}
+
+static mrb_value
+mrb_secure_random_number(mrb_state *mrb, mrb_value self)
+{
+  (void)self;
+  mrb_get_args(mrb, "");
+  uint32_t value = 0;
+  if (picorb_worker_random_bytes((uint8_t *)&value, sizeof(value)) != 0) {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "Web Crypto random generator is unavailable");
+  }
+  return mrb_float_value(mrb, (mrb_float)value / 4294967296.0);
+}
+
+static mrb_value
+mrb_secure_random_bytes(mrb_state *mrb, mrb_value self)
+{
+  (void)self;
+  mrb_int length;
+  if (mrb_get_argc(mrb) == 0) {
+    length = 16;
+  } else {
+    mrb_get_args(mrb, "i", &length);
+  }
+  if (length < 0 || length > PICORB_WORKER_MAX_CRYPTO_DATA_SIZE) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "random byte length is out of range");
+  }
+  mrb_value bytes = mrb_str_new(mrb, NULL, length);
+  if (length > 0 && picorb_worker_random_bytes((uint8_t *)RSTRING_PTR(bytes), (int)length) != 0) {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "Web Crypto random generator is unavailable");
+  }
+  return bytes;
+}
+
+static mrb_value
+mrb_crypto_encrypt(mrb_state *mrb, mrb_value self)
+{
+  (void)self;
+  mrb_value cipher;
+  const char *secret;
+  const char *data;
+  mrb_int secret_len;
+  mrb_int data_len;
+  mrb_get_args(mrb, "oss", &cipher, &secret, &secret_len, &data, &data_len);
+  validate_aes_gcm_cipher(mrb, cipher);
+  validate_aes_gcm_secret(mrb, secret_len);
+  if (data_len > PICORB_WORKER_MAX_CRYPTO_DATA_SIZE) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "AES_GCM plaintext is too large");
+  }
+
+  uintptr_t output_ptr = 0;
+  uint32_t output_len = 0;
+  int status = picorb_worker_aes_gcm_bridge(1, (const uint8_t *)secret, (int)secret_len,
+                                             NULL, 0, (const uint8_t *)data, (int)data_len,
+                                             (uintptr_t)&output_ptr, (uintptr_t)&output_len);
+  if (status == -2) mrb_raise(mrb, E_RUNTIME_ERROR, "out of memory encrypting AES_GCM data");
+  if (status != 0 || output_len < PICORB_WORKER_AES_GCM_IV_SIZE + PICORB_WORKER_AES_GCM_TAG_SIZE) {
+    free((void *)output_ptr);
+    mrb_raise(mrb, E_RUNTIME_ERROR, "Web Crypto AES_GCM encryption failed");
+  }
+  mrb_value iv = mrb_str_new(mrb, (const char *)output_ptr, PICORB_WORKER_AES_GCM_IV_SIZE);
+  mrb_value encrypted = mrb_str_new(mrb, (const char *)output_ptr + PICORB_WORKER_AES_GCM_IV_SIZE,
+                                    output_len - PICORB_WORKER_AES_GCM_IV_SIZE);
+  free((void *)output_ptr);
+  mrb_value result[2] = { iv, encrypted };
+  return mrb_ary_new_from_values(mrb, 2, result);
+}
+
+static mrb_value
+mrb_crypto_decrypt(mrb_state *mrb, mrb_value self)
+{
+  (void)self;
+  mrb_value cipher;
+  const char *secret;
+  const char *iv;
+  const char *encrypted;
+  mrb_int secret_len;
+  mrb_int iv_len;
+  mrb_int encrypted_len;
+  mrb_get_args(mrb, "osss", &cipher, &secret, &secret_len, &iv, &iv_len,
+               &encrypted, &encrypted_len);
+  validate_aes_gcm_cipher(mrb, cipher);
+  validate_aes_gcm_secret(mrb, secret_len);
+  if (iv_len != PICORB_WORKER_AES_GCM_IV_SIZE || encrypted_len < PICORB_WORKER_AES_GCM_TAG_SIZE ||
+      encrypted_len > PICORB_WORKER_MAX_CRYPTO_DATA_SIZE + PICORB_WORKER_AES_GCM_TAG_SIZE) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid AES_GCM IV or ciphertext");
+  }
+
+  uintptr_t output_ptr = 0;
+  uint32_t output_len = 0;
+  int status = picorb_worker_aes_gcm_bridge(0, (const uint8_t *)secret, (int)secret_len,
+                                             (const uint8_t *)iv, (int)iv_len,
+                                             (const uint8_t *)encrypted, (int)encrypted_len,
+                                             (uintptr_t)&output_ptr, (uintptr_t)&output_len);
+  if (status == -2) mrb_raise(mrb, E_RUNTIME_ERROR, "out of memory decrypting AES_GCM data");
+  if (status != 0) {
+    free((void *)output_ptr);
+    mrb_raise(mrb, E_RUNTIME_ERROR, "Web Crypto AES_GCM decryption failed");
+  }
+  mrb_value decrypted = mrb_str_new(mrb, (const char *)output_ptr, output_len);
+  free((void *)output_ptr);
+  return decrypted;
 }
 
 static uint32_t
@@ -851,6 +1019,16 @@ mrb_picoruby_worker_wasm_gem_init(mrb_state *mrb)
 
   struct RClass *jspi_probe = mrb_define_module_under(mrb, worker, "JSPIProbe");
   mrb_define_class_method_id(mrb, jspi_probe, MRB_SYM(add), mrb_jspi_probe_add, MRB_ARGS_REQ(2));
+
+  struct RClass *secure_random = mrb_define_module(mrb, "SecureRandom");
+  mrb_define_module_function(mrb, secure_random, "random_number", mrb_secure_random_number,
+                             MRB_ARGS_NONE());
+  mrb_define_module_function(mrb, secure_random, "random_bytes", mrb_secure_random_bytes,
+                             MRB_ARGS_OPT(1));
+
+  struct RClass *crypto = mrb_define_module(mrb, "Crypto");
+  mrb_define_module_function(mrb, crypto, "encrypt", mrb_crypto_encrypt, MRB_ARGS_REQ(3));
+  mrb_define_module_function(mrb, crypto, "decrypt", mrb_crypto_decrypt, MRB_ARGS_REQ(4));
 
   struct RClass *cloudflare = mrb_define_module(mrb, "Cloudflare");
   struct RClass *cloudflare_error = mrb_define_class_under(mrb, cloudflare, "Error", E_STANDARD_ERROR);

@@ -32,6 +32,7 @@ const wasmModule = new WebAssembly.Module(
 const appBytecode = fs.readFileSync(new URL("../dist/app.bin", import.meta.url));
 const kvAppBytecode = fs.readFileSync(new URL("../dist/kv_app.bin", import.meta.url));
 const bindingsAppBytecode = fs.readFileSync(new URL("../dist/bindings_app.bin", import.meta.url));
+const cryptoAppBytecode = fs.readFileSync(new URL("../dist/crypto_app.bin", import.meta.url));
 const imports = WebAssembly.Module.imports(wasmModule);
 const allowedWasiImports = new Set([
   "fd_close",
@@ -60,6 +61,18 @@ const runtime = await createRuntime(
   wasmModule,
   appBytecode,
 );
+
+const cryptoRuntime = await createRuntime(createPicoRuby, wasmModule, cryptoAppBytecode);
+const randomResponse = await dispatch(cryptoRuntime, new Request("https://example.com/random"));
+assert.equal(await randomResponse.text(), "[16, false, true]");
+const cryptoResponse = await dispatch(cryptoRuntime, new Request("https://example.com/crypto"));
+assert.equal(await cryptoResponse.text(), "[12, 27, true, false]");
+const tamperedCryptoResponse = await dispatch(
+  cryptoRuntime,
+  new Request("https://example.com/crypto/tampered"),
+);
+assert.equal(await tamperedCryptoResponse.text(), "Web Crypto AES_GCM decryption failed");
+await closeRuntime(cryptoRuntime);
 
 const versionResponse = await dispatch(
   runtime,
