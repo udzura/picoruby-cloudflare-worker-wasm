@@ -8,6 +8,8 @@ import {
   RequestBodyTooLargeError,
 } from "./runtime.js";
 
+export { PicoRubyDurableObject } from "./durable-object.js";
+
 export default {
   async fetch(request, env) {
     try {

@@ -579,6 +579,8 @@ module Cloudflare
           value = KV.__build(binding_name)
         elsif type == "queue"
           value = Queue.__build(binding_name)
+        elsif type == "durable_object"
+          value = DurableObject.__build(binding_name)
         else
           present, value = Cloudflare.__env_lookup(binding_name)
           return MISSING unless present
@@ -630,6 +632,82 @@ module Cloudflare
   class Queue < Binding
     def send(message)
       Cloudflare.__queue_send(@binding_name, message)
+    end
+  end
+
+  class DurableObject < Binding
+    class POJO < Hash
+      def self.wrap(value, ancestors = {})
+        if value.is_a?(self)
+          visit(value, ancestors) do
+            value.each { |key, item| validate_member(key, item, ancestors) }
+          end
+          value
+        elsif value.is_a?(Hash)
+          visit(value, ancestors) do
+            pojo = new
+            value.each do |key, item|
+              validate_key(key)
+              pojo[key] = wrap(item, ancestors)
+            end
+            pojo
+          end
+        elsif value.is_a?(Array)
+          visit(value, ancestors) { value.map { |item| wrap(item, ancestors) } }
+        elsif value.nil? || value == true || value == false ||
+              value.is_a?(String) || value.is_a?(Integer) || value.is_a?(Float)
+          value
+        else
+          raise ArgumentError, "Cloudflare Durable Object POJO contains a non-JSON value"
+        end
+      end
+
+      def self.visit(value, ancestors)
+        id = value.object_id
+        if ancestors[id]
+          raise ArgumentError, "Cloudflare Durable Object POJO contains a circular reference"
+        end
+        ancestors[id] = true
+        result = yield
+        ancestors.delete(id)
+        result
+      end
+
+      def self.validate_member(key, value, ancestors)
+        validate_key(key)
+        wrap(value, ancestors)
+      end
+
+      def self.validate_key(key)
+        unless key.is_a?(String) || key.is_a?(Symbol)
+          raise ArgumentError, "Cloudflare Durable Object POJO keys must be strings or symbols"
+        end
+      end
+    end
+
+    def get(name)
+      json = Cloudflare.__durable_object_get(@binding_name, name)
+      return nil if json.nil?
+
+      value = JSON.parse(json)
+      unless value.is_a?(Hash) || value.is_a?(Array)
+        raise ProtocolError, "Cloudflare Durable Object value must be a JSON object or array"
+      end
+      POJO.wrap(value)
+    rescue JSON::JSONError => error
+      raise ProtocolError, "invalid Cloudflare Durable Object JSON: #{error.message}"
+    end
+
+    def put(name, value)
+      unless value.is_a?(POJO) || value.is_a?(Hash) || value.is_a?(Array)
+        value = value.to_pojo if value.respond_to?(:to_pojo)
+      end
+      unless value.is_a?(POJO) || value.is_a?(Hash) || value.is_a?(Array)
+        raise ArgumentError, "Cloudflare Durable Object value must be a POJO, Hash, Array, or respond to to_pojo"
+      end
+      Cloudflare.__durable_object_put(@binding_name, name, JSON.generate(POJO.wrap(value)))
+    rescue JSON::JSONError => error
+      raise ArgumentError, "Cloudflare Durable Object POJO is not JSON serializable: #{error.message}"
     end
   end
 

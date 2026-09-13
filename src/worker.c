@@ -28,6 +28,8 @@
 #define PICORB_WORKER_MAX_KV_KEY_SIZE 512u
 #define PICORB_WORKER_MAX_KV_VALUE_SIZE (8u * 1024u * 1024u)
 #define PICORB_WORKER_MAX_QUEUE_MESSAGE_SIZE (128u * 1024u)
+#define PICORB_WORKER_MAX_DURABLE_OBJECT_NAME_SIZE 1024u
+#define PICORB_WORKER_MAX_DURABLE_OBJECT_JSON_SIZE (1u * 1024u * 1024u)
 #define PICORB_WORKER_MAX_ENV_NAME_SIZE 1024u
 #define PICORB_WORKER_MAX_CRYPTO_DATA_SIZE (8u * 1024u * 1024u)
 #define PICORB_WORKER_AES_GCM_IV_SIZE 12u
@@ -124,6 +126,42 @@ EM_ASYNC_JS(int, picorb_worker_queue_send_bridge,
   const frame = await Module["picorbWorkerQueueSendBridge"](
     UTF8ToString(binding_ptr, binding_len),
     HEAPU8.slice(message_ptr, message_ptr + message_len),
+  );
+  if (!(frame instanceof Uint8Array)) return -1;
+  const frameLen = frame.byteLength;
+  const framePtr = frameLen > 0 ? Module._malloc(frameLen) : 0;
+  if (frameLen > 0 && framePtr === 0) return -2;
+  if (frameLen > 0) HEAPU8.set(frame, framePtr);
+  HEAPU32[frame_ptr_ptr >>> 2] = framePtr;
+  HEAPU32[frame_len_ptr >>> 2] = frameLen;
+  return 0;
+});
+
+EM_ASYNC_JS(int, picorb_worker_durable_object_get_bridge,
+            (const char *binding_ptr, int binding_len, const char *name_ptr, int name_len,
+             uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr), {
+  const frame = await Module["picorbWorkerDurableObjectGetBridge"](
+    UTF8ToString(binding_ptr, binding_len),
+    UTF8ToString(name_ptr, name_len),
+  );
+  if (!(frame instanceof Uint8Array)) return -1;
+  const frameLen = frame.byteLength;
+  const framePtr = frameLen > 0 ? Module._malloc(frameLen) : 0;
+  if (frameLen > 0 && framePtr === 0) return -2;
+  if (frameLen > 0) HEAPU8.set(frame, framePtr);
+  HEAPU32[frame_ptr_ptr >>> 2] = framePtr;
+  HEAPU32[frame_len_ptr >>> 2] = frameLen;
+  return 0;
+});
+
+EM_ASYNC_JS(int, picorb_worker_durable_object_put_bridge,
+            (const char *binding_ptr, int binding_len, const char *name_ptr, int name_len,
+             const char *json_ptr, int json_len, uintptr_t frame_ptr_ptr,
+             uintptr_t frame_len_ptr), {
+  const frame = await Module["picorbWorkerDurableObjectPutBridge"](
+    UTF8ToString(binding_ptr, binding_len),
+    UTF8ToString(name_ptr, name_len),
+    UTF8ToString(json_ptr, json_len),
   );
   if (!(frame instanceof Uint8Array)) return -1;
   const frameLen = frame.byteLength;
@@ -562,6 +600,109 @@ mrb_cloudflare_queue_send(mrb_state *mrb, mrb_value self)
   if (result.kind != PICORB_WORKER_HOST_OK || result.payload_len != 0) {
     free((void *)frame_ptr);
     raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare Queue send host result");
+  }
+  free((void *)frame_ptr);
+  return mrb_nil_value();
+}
+
+static void
+validate_cloudflare_durable_object_name(mrb_state *mrb, const char *name, mrb_int name_len)
+{
+  if (name_len <= 0 || name_len > PICORB_WORKER_MAX_DURABLE_OBJECT_NAME_SIZE ||
+      memchr(name, '\0', name_len)) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid Cloudflare Durable Object name");
+  }
+}
+
+static mrb_value
+mrb_cloudflare_durable_object_get(mrb_state *mrb, mrb_value self)
+{
+  (void)self;
+  const char *binding;
+  const char *name;
+  mrb_int binding_len;
+  mrb_int name_len;
+  mrb_get_args(mrb, "ss", &binding, &binding_len, &name, &name_len);
+  if (binding_len > INT_MAX || name_len > INT_MAX) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "Cloudflare Durable Object binding name or object name is too large");
+  }
+  validate_cloudflare_binding_name(mrb, binding, binding_len);
+  validate_cloudflare_durable_object_name(mrb, name, name_len);
+
+  uintptr_t frame_ptr = 0;
+  uint32_t frame_len = 0;
+  int status = picorb_worker_durable_object_get_bridge(
+    binding, (int)binding_len, name, (int)name_len,
+    (uintptr_t)&frame_ptr, (uintptr_t)&frame_len
+  );
+  if (status < 0) {
+    raise_cloudflare_error(mrb, "ProtocolError", "Cloudflare Durable Object get bridge failed");
+  }
+
+  picorb_worker_host_result result;
+  if (!decode_host_result((const uint8_t *)frame_ptr, frame_len, &result)) {
+    free((void *)frame_ptr);
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare Durable Object host result");
+  }
+  if (result.kind == PICORB_WORKER_HOST_MISSING) {
+    free((void *)frame_ptr);
+    return mrb_nil_value();
+  }
+  if (result.kind >= PICORB_WORKER_HOST_ERROR) {
+    raise_host_result_error(mrb, &result, frame_ptr);
+  }
+  if (result.kind != PICORB_WORKER_HOST_OK ||
+      result.payload_len > PICORB_WORKER_MAX_DURABLE_OBJECT_JSON_SIZE) {
+    free((void *)frame_ptr);
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare Durable Object get result");
+  }
+
+  mrb_value json = mrb_str_new(mrb, (const char *)result.payload, result.payload_len);
+  free((void *)frame_ptr);
+  return json;
+}
+
+static mrb_value
+mrb_cloudflare_durable_object_put(mrb_state *mrb, mrb_value self)
+{
+  (void)self;
+  const char *binding;
+  const char *name;
+  const char *json;
+  mrb_int binding_len;
+  mrb_int name_len;
+  mrb_int json_len;
+  mrb_get_args(mrb, "sss", &binding, &binding_len, &name, &name_len, &json, &json_len);
+  if (binding_len > INT_MAX || name_len > INT_MAX || json_len > INT_MAX) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "Cloudflare Durable Object argument is too large");
+  }
+  validate_cloudflare_binding_name(mrb, binding, binding_len);
+  validate_cloudflare_durable_object_name(mrb, name, name_len);
+  if (json_len > PICORB_WORKER_MAX_DURABLE_OBJECT_JSON_SIZE || memchr(json, '\0', json_len)) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "Cloudflare Durable Object JSON is too large or contains NUL bytes");
+  }
+
+  uintptr_t frame_ptr = 0;
+  uint32_t frame_len = 0;
+  int status = picorb_worker_durable_object_put_bridge(
+    binding, (int)binding_len, name, (int)name_len, json, (int)json_len,
+    (uintptr_t)&frame_ptr, (uintptr_t)&frame_len
+  );
+  if (status < 0) {
+    raise_cloudflare_error(mrb, "ProtocolError", "Cloudflare Durable Object put bridge failed");
+  }
+
+  picorb_worker_host_result result;
+  if (!decode_host_result((const uint8_t *)frame_ptr, frame_len, &result)) {
+    free((void *)frame_ptr);
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare Durable Object put host result");
+  }
+  if (result.kind >= PICORB_WORKER_HOST_ERROR) {
+    raise_host_result_error(mrb, &result, frame_ptr);
+  }
+  if (result.kind != PICORB_WORKER_HOST_OK || result.payload_len != 0) {
+    free((void *)frame_ptr);
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare Durable Object put result");
   }
   free((void *)frame_ptr);
   return mrb_nil_value();
@@ -1038,6 +1179,10 @@ mrb_picoruby_worker_wasm_gem_init(mrb_state *mrb)
   mrb_define_module_function(mrb, cloudflare, "__kv_get", mrb_cloudflare_kv_get, MRB_ARGS_REQ(2));
   mrb_define_module_function(mrb, cloudflare, "__kv_put", mrb_cloudflare_kv_set, MRB_ARGS_REQ(4));
   mrb_define_module_function(mrb, cloudflare, "__queue_send", mrb_cloudflare_queue_send, MRB_ARGS_REQ(2));
+  mrb_define_module_function(mrb, cloudflare, "__durable_object_get",
+                             mrb_cloudflare_durable_object_get, MRB_ARGS_REQ(2));
+  mrb_define_module_function(mrb, cloudflare, "__durable_object_put",
+                             mrb_cloudflare_durable_object_put, MRB_ARGS_REQ(3));
   mrb_define_module_function(mrb, cloudflare, "__fetch", mrb_cloudflare_fetch,
                              MRB_ARGS_REQ(2));
   mrb_define_module_function(mrb, cloudflare, "__env_get_raw", mrb_cloudflare_env_get, MRB_ARGS_REQ(1));

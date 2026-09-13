@@ -116,15 +116,16 @@ curl http://localhost:8787/kv/set
 curl http://localhost:8787/kv/get
 ```
 
-See [Cloudflare KV](../docs/cloudflare-kv.md) and
-[Cloudflare environment values](../docs/cloudflare-env.md), and
-[Cloudflare Queues](../docs/cloudflare-queue.md) for the Ruby API and its
+See [Cloudflare KV](../docs/cloudflare-kv.md),
+[Cloudflare environment values](../docs/cloudflare-env.md),
+[Cloudflare Queues](../docs/cloudflare-queue.md), and
+[Durable Objects](../docs/cloudflare-durable-object.md) for the Ruby API and its
 current limits.
 
 ## Host binding factories
 
 `wrangler.jsonc` is the source of truth for resource binding types. Generate
-the checked-in registry after adding or changing KV or Queue bindings:
+the checked-in registry after adding or changing KV, Queue, or Durable Object bindings:
 
 ```console
 npm run generate:bindings
@@ -164,8 +165,9 @@ The Worker creates a fresh PicoRuby VM for each request. JavaScript buffers each
 Request asynchronously, then Ruby dispatch and response generation are
 synchronous except for JSPI-backed host calls. The common host bridge carries
 success, missing values, and host errors in one binary result frame; rejected
-KV and Queue Promises become `Cloudflare::HostError` in Ruby. Each Rack env has
-a `cloudflare.env` proxy for KV, Queue, variables, and secrets. `ENV` retains a
+KV, Queue, and Durable Object Promises become `Cloudflare::HostError` in Ruby.
+Each Rack env has a `cloudflare.env` proxy for KV, Queue, Durable Object,
+variables, and secrets. `ENV` retains a
 direct scalar-value bypass because Worker `env` is already available for the
 request.
 

@@ -1,8 +1,9 @@
 import { parse, printParseErrorCode } from "jsonc-parser";
 
 const RESOURCE_BINDINGS = [
-  ["kv_namespaces", null, "kv"],
-  ["queues", "producers", "queue"],
+  { section: "kv_namespaces", subsection: null, nameField: "binding", type: "kv" },
+  { section: "queues", subsection: "producers", nameField: "binding", type: "queue" },
+  { section: "durable_objects", subsection: "bindings", nameField: "name", type: "durable_object" },
 ];
 
 export function parseCloudflareBindingTypes(source, environment = null) {
@@ -26,12 +27,12 @@ export function parseCloudflareBindingTypes(source, environment = null) {
 
   const entries = [];
   const names = new Set();
-  for (const [section, subsection, type] of RESOURCE_BINDINGS) {
+  for (const { section, subsection, nameField, type } of RESOURCE_BINDINGS) {
     const bindings = subsection === null ? selected[section] : selected[section]?.[subsection];
     if (bindings === undefined) continue;
     if (!Array.isArray(bindings)) throw new TypeError(`${section}${subsection ? `.${subsection}` : ""} must be an array`);
     for (const binding of bindings) {
-      const name = binding?.binding;
+      const name = binding?.[nameField];
       if (typeof name !== "string" || name.length === 0) {
         throw new TypeError(`${section} contains an invalid binding name`);
       }
