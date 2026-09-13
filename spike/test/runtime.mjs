@@ -408,6 +408,7 @@ await closeRuntime(kvRuntime);
 
 const namedKvStore = new Map();
 const namedKvOptions = new Map();
+const durableObjectStore = new Map();
 const runtimeQueueMessages = [];
 const serializedDispatchEvents = [];
 let releaseFirstSerializedDispatch;
@@ -461,6 +462,18 @@ const runtimeWorkerEnv = {
       runtimeQueueMessages.push([body, options]);
     },
   },
+  OBJECTS: {
+    getByName(name) {
+      return {
+        async get() {
+          return durableObjectStore.get(name) ?? null;
+        },
+        async put(json) {
+          durableObjectStore.set(name, json);
+        },
+      };
+    },
+  },
 };
 const runtimeWarnings = [];
 const originalConsoleError = console.error;
@@ -476,6 +489,7 @@ try {
       QUEUE_FOO: "queue",
       SECOND_KV: "kv",
       BROKEN_KV: "kv",
+      OBJECTS: "durable_object",
     }),
   );
 } finally {
@@ -657,6 +671,38 @@ const rejectedQueueResponse = await dispatch(
   new Request("https://example.com/queue/rejected"),
 );
 assert.match(await rejectedQueueResponse.text(), /host-error=Queue backend rejected the message/);
+
+const missingDurableObjectResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/durable-object/missing"),
+);
+assert.equal(await missingDurableObjectResponse.text(), "missing");
+
+for (const [path, expected] of [
+  ["pojo", '[Cloudflare::DurableObject::POJO, "Alice"]'],
+  ["hash", "[Cloudflare::DurableObject::POJO, Cloudflare::DurableObject::POJO]"],
+  ["array", "[Array, Cloudflare::DurableObject::POJO]"],
+  ["to-pojo", '["to_pojo", Cloudflare::DurableObject::POJO]'],
+]) {
+  const response = await dispatch(
+    bindingsRuntime,
+    new Request(`https://example.com/durable-object/${path}`),
+  );
+  assert.equal(await response.text(), expected);
+}
+assert.equal(durableObjectStore.get("pojo"), '{"name":"Alice"}');
+assert.equal(durableObjectStore.get("hash"), '{"items":[{"id":1}]}');
+assert.equal(durableObjectStore.get("array"), '[{"id":1}]');
+assert.equal(durableObjectStore.get("convertible"), '{"source":"to_pojo","nested":[{"ok":true}]}');
+
+for (const name of ["invalid", "invalid-conversion", "invalid-nested", "circular"]) {
+  const response = await dispatch(
+    bindingsRuntime,
+    new Request(`https://example.com/durable-object/${name}`),
+  );
+  assert.match(await response.text(), /argument-error=Cloudflare Durable Object/);
+  assert.equal(durableObjectStore.has(name), false);
+}
 
 const typeErrorResponse = await dispatch(
   bindingsRuntime,

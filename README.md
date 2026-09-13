@@ -10,7 +10,8 @@ artifacts from the Worker module.
 See [spike/README.md](spike/README.md) for setup and build instructions.
 Cloudflare bindings are documented in [docs/cloudflare-env.md](docs/cloudflare-env.md),
 [docs/cloudflare-kv.md](docs/cloudflare-kv.md), and
-[docs/cloudflare-queue.md](docs/cloudflare-queue.md). Web Crypto bindings are
+[docs/cloudflare-queue.md](docs/cloudflare-queue.md). Durable Object POJO storage is
+documented in [docs/cloudflare-durable-object.md](docs/cloudflare-durable-object.md). Web Crypto bindings are
 documented in [docs/web-crypto.md](docs/web-crypto.md).
 
 An encrypted cookie-session example using the latest `mruby-rack` is available
@@ -49,6 +50,7 @@ contract, limits, `Rack::Lint` results, and asynchronous roadmap.
   host calls during Ruby dispatch;
 - named Cloudflare KV bindings with binary-safe `get` and `put` (`set`), optional `ttl:`, using JSPI;
 - Cloudflare Queue text-message producers using JSPI;
+- named Durable Objects storing JSON-compatible POJOs through JSPI;
 - buffered HTTP(S) text fetch using JSPI (see [fetch API](docs/cloudflare-fetch.md));
 - Web Crypto-backed `SecureRandom.random_number`, `SecureRandom.random_bytes`, and AES-GCM encryption;
 - Cloudflare Access Rack middleware (see [Access API](docs/cloudflare-access.md));

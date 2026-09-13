@@ -1,3 +1,15 @@
+class DurablePojoSource
+  def to_pojo
+    { "source" => "to_pojo", "nested" => [{ "ok" => true }] }
+  end
+end
+
+class InvalidDurablePojoSource
+  def to_pojo
+    "not a POJO"
+  end
+end
+
 class BindingsApp
   def self.call(env)
     case env["PATH_INFO"]
@@ -118,6 +130,57 @@ class BindingsApp
         env["cloudflare.env"].QUEUE_FOO.send("reject")
       rescue Cloudflare::HostError => error
         [200, { "content-type" => "text/plain; charset=utf-8" }, ["host-error=#{error.message}"]]
+      end
+    when "/durable-object/missing"
+      value = Cloudflare::DurableObject.from_env(env, "OBJECTS").get("missing")
+      [200, { "content-type" => "text/plain" }, [value.nil? ? "missing" : "present"]]
+    when "/durable-object/pojo"
+      store = env["cloudflare.env"].OBJECTS
+      value = Cloudflare::DurableObject::POJO.new
+      value["name"] = "Alice"
+      store.put("pojo", value)
+      loaded = store.get("pojo")
+      [200, { "content-type" => "text/plain" }, [[loaded.class, loaded["name"]].inspect]]
+    when "/durable-object/hash"
+      store = env["cloudflare.env"].OBJECTS
+      store.put("hash", { "items" => [{ "id" => 1 }] })
+      loaded = store.get("hash")
+      [200, { "content-type" => "text/plain" }, [[loaded.class, loaded["items"][0].class].inspect]]
+    when "/durable-object/array"
+      store = env["cloudflare.env"].OBJECTS
+      store.put("array", [{ "id" => 1 }])
+      loaded = store.get("array")
+      [200, { "content-type" => "text/plain" }, [[loaded.class, loaded[0].class].inspect]]
+    when "/durable-object/to-pojo"
+      store = env["cloudflare.env"].OBJECTS
+      store.put("convertible", DurablePojoSource.new)
+      loaded = store.get("convertible")
+      [200, { "content-type" => "text/plain" }, [[loaded["source"], loaded["nested"][0].class].inspect]]
+    when "/durable-object/invalid"
+      begin
+        env["cloudflare.env"].OBJECTS.put("invalid", Object.new)
+      rescue ArgumentError => error
+        [200, { "content-type" => "text/plain" }, ["argument-error=#{error.message}"]]
+      end
+    when "/durable-object/invalid-conversion"
+      begin
+        env["cloudflare.env"].OBJECTS.put("invalid-conversion", InvalidDurablePojoSource.new)
+      rescue ArgumentError => error
+        [200, { "content-type" => "text/plain" }, ["argument-error=#{error.message}"]]
+      end
+    when "/durable-object/invalid-nested"
+      begin
+        env["cloudflare.env"].OBJECTS.put("invalid-nested", { "value" => Object.new })
+      rescue ArgumentError => error
+        [200, { "content-type" => "text/plain" }, ["argument-error=#{error.message}"]]
+      end
+    when "/durable-object/circular"
+      begin
+        value = []
+        value << value
+        env["cloudflare.env"].OBJECTS.put("circular", value)
+      rescue ArgumentError => error
+        [200, { "content-type" => "text/plain" }, ["argument-error=#{error.message}"]]
       end
     when "/binding/type-error"
       begin

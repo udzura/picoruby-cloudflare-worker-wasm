@@ -49,6 +49,8 @@ const defaultRuntimeBindings = {
   picorbWorkerKvGetBridge: unavailableHostBridge,
   picorbWorkerKvPutBridge: unavailableHostBridge,
   picorbWorkerQueueSendBridge: unavailableHostBridge,
+  picorbWorkerDurableObjectGetBridge: unavailableHostBridge,
+  picorbWorkerDurableObjectPutBridge: unavailableHostBridge,
   picorbWorkerFetchBridge: unavailableHostBridge,
   picorbWorkerEnvGetBridge: unavailableEnvironmentBridge,
   picorbWorkerEnvBindingTypeBridge: unavailableEnvironmentBridge,
@@ -150,6 +152,64 @@ export function createCloudflareQueueBindings(env, bindingTypes = {}) {
   };
 }
 
+export function createCloudflareDurableObjectBindings(env, bindingTypes = {}) {
+  const types = normalizeBindingTypes(bindingTypes);
+  return {
+    picorbWorkerDurableObjectGetBridge: async (bindingName, objectName) => {
+      return await captureHostCall(async () => {
+        const stub = getDurableObjectStub(env, types, bindingName, objectName);
+        const json = await stub.get();
+        if (json === null || json === undefined) return hostMissing();
+        validateDurableObjectJson(json);
+        return hostOk(utf8(json));
+      });
+    },
+    picorbWorkerDurableObjectPutBridge: async (bindingName, objectName, json) => {
+      return await captureHostCall(async () => {
+        const stub = getDurableObjectStub(env, types, bindingName, objectName);
+        validateDurableObjectJson(json);
+        await stub.put(json);
+        return hostOk(new Uint8Array());
+      });
+    },
+  };
+}
+
+function getDurableObjectStub(env, bindingTypes, bindingName, objectName) {
+  if (typeof bindingName !== "string" || bindingName.length === 0) {
+    throw new HostArgumentError("Cloudflare Durable Object binding name must be a non-empty string");
+  }
+  if (typeof objectName !== "string" || objectName.length === 0) {
+    throw new HostArgumentError("Cloudflare Durable Object name must be a non-empty string");
+  }
+
+  requireBindingType(bindingTypes, bindingName, "durable_object");
+  const namespace = env[bindingName];
+  if (!namespace || typeof namespace.getByName !== "function") {
+    throw new HostBindingError(`Cloudflare Durable Object binding ${bindingName} is not configured`);
+  }
+  const stub = namespace.getByName(objectName);
+  if (!stub || typeof stub.get !== "function" || typeof stub.put !== "function") {
+    throw new HostBindingError(`Cloudflare Durable Object ${bindingName} does not provide get/put RPC methods`);
+  }
+  return stub;
+}
+
+function validateDurableObjectJson(json) {
+  if (typeof json !== "string") {
+    throw new HostProtocolError("Cloudflare Durable Object value must be a JSON string");
+  }
+  let value;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    throw new HostProtocolError("Cloudflare Durable Object value contains invalid JSON");
+  }
+  if (!value || typeof value !== "object") {
+    throw new HostProtocolError("Cloudflare Durable Object value must encode a JSON object or array");
+  }
+}
+
 function decodeQueueMessage(message) {
   try {
     return strictDecoder.decode(message);
@@ -195,7 +255,8 @@ function isResourceBinding(value) {
     typeof value.get === "function" ||
     typeof value.put === "function" ||
     typeof value.send === "function" ||
-    typeof value.fetch === "function"
+    typeof value.fetch === "function" ||
+    typeof value.getByName === "function"
   );
 }
 
@@ -322,6 +383,7 @@ export function createCloudflareBindings(env, bindingTypes) {
   return mergeBindings(
     createCloudflareKvBindings(env, types),
     createCloudflareQueueBindings(env, types),
+    createCloudflareDurableObjectBindings(env, types),
     createFetchBindings(),
     createEnvironmentBindings(env, types),
   );
@@ -336,7 +398,7 @@ function normalizeBindingTypes(bindingTypes) {
     if (typeof name !== "string" || name.length === 0) {
       throw new TypeError("Cloudflare binding type contains an invalid name");
     }
-    if (type !== "kv" && type !== "queue") {
+    if (type !== "kv" && type !== "queue" && type !== "durable_object") {
       throw new TypeError(`Unsupported Cloudflare binding type for ${name}: ${type}`);
     }
     normalized[name] = type;

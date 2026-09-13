@@ -8,5 +8,19 @@
 			"binding": "CACHE_KV",
 			"id": "0f9573b8367a487c929ce1f71c617169"
 		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "OBJECTS",
+				"class_name": "PicoRubyDurableObject"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": ["PicoRubyDurableObject"]
+		}
 	]
 }
