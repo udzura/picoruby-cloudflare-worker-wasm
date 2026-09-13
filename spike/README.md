@@ -37,13 +37,19 @@ npm run build
 
 `npm run build` performs all build-time work:
 
-1. invokes PicoRuby's Rakefile with `build_config/picoruby-worker-wasm.rb`;
-2. checks out Mustermann, Rack, and Sinatra compatibility mrbgems from their
+1. copies the shared Worker runtime and binding-generator sources from
+   `../templates/` into `src/` and `scripts/`;
+2. invokes PicoRuby's Rakefile with `build_config/picoruby-worker-wasm.rb`;
+3. checks out Mustermann, Rack, and Sinatra compatibility mrbgems from their
    `master` branches on GitHub;
-3. uses the `mruby-regexp` bundled with PicoRuby;
-4. clones `udzura/picoruby-cloudflare-worker-wasm` as the Worker mrbgem;
-5. generates `dist/picoruby-worker.js` and `dist/picoruby-worker.wasm`;
-6. compiles `lib/app.rb` with PicoRuby's host `mrbc` into `dist/app.bin`.
+4. uses the `mruby-regexp` bundled with PicoRuby;
+5. clones `udzura/picoruby-cloudflare-worker-wasm` as the Worker mrbgem;
+6. generates `dist/picoruby-worker.js` and `dist/picoruby-worker.wasm`;
+7. compiles `lib/app.rb` with PicoRuby's host `mrbc` into `dist/app.bin`.
+
+The files copied into `src/` and `scripts/` remain checked in so the spike is
+runnable immediately. Edit their source files under `../templates/`; the next
+build updates the spike copies without rewriting files whose contents match.
 
 When developing unreleased changes in the parent mrbgem, bypass the GitHub pin:
 

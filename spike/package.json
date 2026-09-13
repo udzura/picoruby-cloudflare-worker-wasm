@@ -3,9 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "sync:templates": "rake -f Rakefile templates",
     "generate:bindings": "node scripts/generate-bindings.mjs",
     "check:bindings": "node scripts/generate-bindings.mjs --check",
-    "build": "npm run generate:bindings && rake -f Rakefile build",
+    "build": "npm run sync:templates && npm run generate:bindings && rake -f Rakefile build",
     "build:app": "rake -f Rakefile app",
     "clean": "rake -f Rakefile clean",
     "watch:app": "node scripts/watch-app.mjs",
