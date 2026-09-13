@@ -13,6 +13,9 @@ Cloudflare bindings are documented in [docs/cloudflare-env.md](docs/cloudflare-e
 [docs/cloudflare-queue.md](docs/cloudflare-queue.md). Web Crypto bindings are
 documented in [docs/web-crypto.md](docs/web-crypto.md).
 
+An encrypted cookie-session example using the latest `mruby-rack` is available
+under [examples/cookie-simple](examples/cookie-simple/README.md).
+
 ## Rack application
 
 Register a Rack-style application directly from the precompiled Ruby program:
