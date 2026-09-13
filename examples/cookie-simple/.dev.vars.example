@@ -1,0 +1,2 @@
+# Development only. Use `wrangler secret put SESSION_SECRET` in production.
+SESSION_SECRET=0123456789abcdef0123456789abcdef

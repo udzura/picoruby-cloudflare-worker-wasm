@@ -11,6 +11,7 @@ DIST_DIR = File.join(SPIKE_ROOT, "dist")
 APP_SOURCE = File.expand_path(ENV.fetch("PICORUBY_APP", "lib/app.rb"), SPIKE_ROOT)
 KV_TEST_APP_SOURCE = File.join(SPIKE_ROOT, "test", "kv_app.rb")
 BINDINGS_TEST_APP_SOURCE = File.join(SPIKE_ROOT, "test", "bindings_app.rb")
+CRYPTO_TEST_APP_SOURCE = File.join(SPIKE_ROOT, "test", "crypto_app.rb")
 WORKER_WASM_REVISION = ENV.fetch("PICORUBY_WORKER_WASM_REV", "939022a7d2c77acb3b2d456c8ebbcb54a17a9aca")
 
 abort "PicoRuby Rakefile was not found: #{PICORUBY_RAKEFILE}" unless File.file?(PICORUBY_RAKEFILE)
@@ -72,6 +73,10 @@ def compile_bindings_test_app!
   compile_ruby_app!(BINDINGS_TEST_APP_SOURCE, File.join(DIST_DIR, "bindings_app.bin"))
 end
 
+def compile_crypto_test_app!
+  compile_ruby_app!(CRYPTO_TEST_APP_SOURCE, File.join(DIST_DIR, "crypto_app.bin"))
+end
+
 def stage_runtime!
   runtime_dir = File.join(PICORUBY_ROOT, "build", "picoruby-worker-wasm", "bin")
   %w[picoruby-worker.js picoruby-worker.wasm].each do |artifact|
@@ -88,6 +93,7 @@ task :build do
   compile_app!
   compile_kv_test_app!
   compile_bindings_test_app!
+  compile_crypto_test_app!
   stage_runtime!
 end
 
