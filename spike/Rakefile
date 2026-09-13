@@ -2,6 +2,14 @@ require "fileutils"
 require "open3"
 
 SPIKE_ROOT = File.expand_path(__dir__)
+TEMPLATES_ROOT = File.expand_path("../templates", SPIKE_ROOT)
+TEMPLATE_ASSETS = {
+  "runtime/runtime.js" => "src/runtime.js",
+  "runtime/host-bridge.js" => "src/host-bridge.js",
+  "runtime/durable-object.js" => "src/durable-object.js",
+  "tools/cloudflare-binding-registry.mjs" => "scripts/cloudflare-binding-registry.mjs",
+  "tools/generate-bindings.mjs" => "scripts/generate-bindings.mjs",
+}.freeze
 PICORUBY_ROOT = ENV.fetch("PICORUBY_ROOT") do
   abort "Set PICORUBY_ROOT to a PicoRuby source checkout."
 end
@@ -15,6 +23,18 @@ CRYPTO_TEST_APP_SOURCE = File.join(SPIKE_ROOT, "test", "crypto_app.rb")
 WORKER_WASM_REVISION = ENV.fetch("PICORUBY_WORKER_WASM_REV", "939022a7d2c77acb3b2d456c8ebbcb54a17a9aca")
 
 abort "PicoRuby Rakefile was not found: #{PICORUBY_RAKEFILE}" unless File.file?(PICORUBY_RAKEFILE)
+
+def sync_template_assets!
+  TEMPLATE_ASSETS.each do |template, spike|
+    source = File.join(TEMPLATES_ROOT, template)
+    destination = File.join(SPIKE_ROOT, spike)
+    abort "template asset was not found: #{source}" unless File.file?(source)
+    next if File.file?(destination) && File.binread(destination) == File.binread(source)
+
+    FileUtils.mkdir_p(File.dirname(destination))
+    FileUtils.cp(source, destination)
+  end
+end
 
 def verify_emscripten!
   output, status = Open3.capture2e("emcc", "--version")
@@ -88,13 +108,18 @@ def stage_runtime!
 end
 
 desc "Build the PicoRuby Worker runtime and compile the selected app"
-task :build do
+task build: :templates do
   build_runtime!
   compile_app!
   compile_kv_test_app!
   compile_bindings_test_app!
   compile_crypto_test_app!
   stage_runtime!
+end
+
+desc "Copy generated-project assets from templates into the spike"
+task :templates do
+  sync_template_assets!
 end
 
 desc "Compile the selected app after the runtime has already been built"

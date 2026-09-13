@@ -7,6 +7,10 @@ An external PicoRuby mrbgem that builds a small Rack-compatible runtime for
 WebAssembly, compiles `spike/lib/app.rb` to mruby bytecode, and imports both
 artifacts from the Worker module.
 
+`templates/` is the source of the shared JavaScript runtime and binding
+generator exported by `picoruby-cloudflare-template`. The spike build copies
+those files into `spike/src/` and `spike/scripts/` before building.
+
 See [spike/README.md](spike/README.md) for setup and build instructions.
 Cloudflare bindings are documented in [docs/cloudflare-env.md](docs/cloudflare-env.md),
 [docs/cloudflare-kv.md](docs/cloudflare-kv.md), and
