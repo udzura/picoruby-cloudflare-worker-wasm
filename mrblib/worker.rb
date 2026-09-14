@@ -951,3 +951,19 @@ if Object.const_defined?(:Rack)
     end
   end
 end
+
+module SecureRandom
+  HEX_DIGITS = "0123456789abcdef"
+
+  def self.hex(length = nil)
+    bytes = length.nil? ? random_bytes : random_bytes(length)
+    result = ""
+    index = 0
+    while index < bytes.bytesize
+      byte = bytes.getbyte(index)
+      result = result + HEX_DIGITS[byte >> 4] + HEX_DIGITS[byte & 0x0f]
+      index += 1
+    end
+    result
+  end
+end
