@@ -7,8 +7,10 @@ class CryptoApp
     when "/random"
       bytes = SecureRandom.random_bytes
       random = SecureRandom.random_number
+      hex = SecureRandom.hex(8)
       [200, { "content-type" => "text/plain" }, [
-        [bytes.bytesize, bytes == "\x00" * 16, random >= 0.0 && random < 1.0].inspect,
+        [bytes.bytesize, bytes == "\x00" * 16, random >= 0.0 && random < 1.0,
+         hex.bytesize, /\A[0-9a-f]+\z/ === hex].inspect,
       ]]
     when "/crypto"
       iv, encrypted = Crypto.encrypt(:AES_GCM, SECRET, RAW_DATA)

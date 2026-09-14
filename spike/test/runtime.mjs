@@ -64,7 +64,7 @@ const runtime = await createRuntime(
 
 const cryptoRuntime = await createRuntime(createPicoRuby, wasmModule, cryptoAppBytecode);
 const randomResponse = await dispatch(cryptoRuntime, new Request("https://example.com/random"));
-assert.equal(await randomResponse.text(), "[16, false, true]");
+assert.equal(await randomResponse.text(), "[16, false, true, 16, true]");
 const cryptoResponse = await dispatch(cryptoRuntime, new Request("https://example.com/crypto"));
 assert.equal(await cryptoResponse.text(), "[12, 27, true, false]");
 const tamperedCryptoResponse = await dispatch(
