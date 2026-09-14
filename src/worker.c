@@ -1059,6 +1059,15 @@ picorb_worker_init(const uint8_t *mrb_data, size_t mrb_len)
     set_error_literal("failed to initialize the PicoRuby VM");
     return PICORB_WORKER_OUT_OF_MEMORY;
   }
+  if (mrb->exc) {
+    /* mrb_open can return a VM whose core or gem initialization failed. */
+    mrb_value exception = mrb_obj_value(mrb->exc);
+    mrb_gc_protect(mrb, exception);
+    mrb->exc = NULL;
+    set_error_from_exception(mrb, exception);
+    mrb_close(mrb);
+    return PICORB_WORKER_LOAD_ERROR;
+  }
 
   picorb_worker_load_args args = { mrb_data, mrb_len };
   mrb_bool error = FALSE;
