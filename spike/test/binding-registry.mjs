@@ -10,6 +10,7 @@ const source = `{
   "kv_namespaces": [{ "binding": "CACHE_KV", "id": "test" }],
   "queues": { "producers": [{ "binding": "EVENTS_QUEUE", "queue": "events" }] },
   "durable_objects": { "bindings": [{ "name": "OBJECTS", "class_name": "PicoRubyDurableObject" }] },
+  "d1_databases": [{ "binding": "DB", "database_name": "test", "database_id": "test" }],
   "vars": { "IGNORED_SCALAR": "value" },
   "env": {
     "staging": {
@@ -20,6 +21,7 @@ const source = `{
 
 assert.deepEqual(parseCloudflareBindingTypes(source), [
   ["CACHE_KV", "kv"],
+  ["DB", "d1"],
   ["EVENTS_QUEUE", "queue"],
   ["OBJECTS", "durable_object"],
 ]);

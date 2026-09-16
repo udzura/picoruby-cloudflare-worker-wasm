@@ -51,6 +51,7 @@ const defaultRuntimeBindings = {
   picorbWorkerQueueSendBridge: unavailableHostBridge,
   picorbWorkerDurableObjectGetBridge: unavailableHostBridge,
   picorbWorkerDurableObjectPutBridge: unavailableHostBridge,
+  picorbWorkerD1Bridge: unavailableHostBridge,
   picorbWorkerFetchBridge: unavailableHostBridge,
   picorbWorkerEnvGetBridge: unavailableEnvironmentBridge,
   picorbWorkerEnvBindingTypeBridge: unavailableEnvironmentBridge,
@@ -210,6 +211,156 @@ function validateDurableObjectJson(json) {
   }
 }
 
+export function createCloudflareD1Bindings(env, bindingTypes = {}) {
+  const types = normalizeBindingTypes(bindingTypes);
+  return {
+    picorbWorkerD1Bridge: async (bindingName, requestJson) => {
+      return await captureHostCall(async () => {
+        const database = getD1Database(env, types, bindingName);
+        const request = parseD1Request(requestJson);
+        const result = await executeD1Request(database, request);
+        validateD1JsonValue(result);
+        return hostOk(utf8(JSON.stringify(result)));
+      });
+    },
+  };
+}
+
+function getD1Database(env, bindingTypes, bindingName) {
+  if (typeof bindingName !== "string" || bindingName.length === 0) {
+    throw new HostArgumentError("Cloudflare D1 binding name must be a non-empty string");
+  }
+
+  requireBindingType(bindingTypes, bindingName, "d1");
+  const database = env[bindingName];
+  if (!database || typeof database.prepare !== "function" || typeof database.batch !== "function") {
+    throw new HostBindingError(`Cloudflare D1 binding ${bindingName} is not configured`);
+  }
+  return database;
+}
+
+function parseD1Request(requestJson) {
+  if (typeof requestJson !== "string") {
+    throw new HostProtocolError("Cloudflare D1 request must be a JSON string");
+  }
+  let request;
+  try {
+    request = JSON.parse(requestJson);
+  } catch {
+    throw new HostProtocolError("Cloudflare D1 request contains invalid JSON");
+  }
+  if (!request || typeof request !== "object" || Array.isArray(request)) {
+    throw new HostProtocolError("Cloudflare D1 request must be an object");
+  }
+
+  if (request.operation === "batch") {
+    requireD1Fields(request, ["operation", "statements"]);
+    if (!Array.isArray(request.statements) || request.statements.length === 0) {
+      throw new HostProtocolError("Cloudflare D1 batch requires at least one statement");
+    }
+    return {
+      operation: "batch",
+      statements: request.statements.map(validateD1StatementSpec),
+    };
+  }
+
+  if (!["run", "first", "raw"].includes(request.operation)) {
+    throw new HostProtocolError(`Unsupported Cloudflare D1 operation: ${request.operation}`);
+  }
+  const fields = ["operation", "sql", "params"];
+  if (request.operation === "first") fields.push("column");
+  if (request.operation === "raw") fields.push("columnNames");
+  requireD1Fields(request, fields);
+
+  const statement = validateD1StatementSpec({ sql: request.sql, params: request.params });
+  if (request.operation === "first" && request.column !== null &&
+      (typeof request.column !== "string" || request.column.length === 0)) {
+    throw new HostProtocolError("Cloudflare D1 first column must be null or a non-empty string");
+  }
+  if (request.operation === "raw" && typeof request.columnNames !== "boolean") {
+    throw new HostProtocolError("Cloudflare D1 raw columnNames must be boolean");
+  }
+  return { ...request, ...statement };
+}
+
+function requireD1Fields(value, expected) {
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  if (actual.length !== wanted.length || actual.some((name, index) => name !== wanted[index])) {
+    throw new HostProtocolError("Cloudflare D1 request contains unsupported or missing fields");
+  }
+}
+
+function validateD1StatementSpec(statement) {
+  if (!statement || typeof statement !== "object" || Array.isArray(statement)) {
+    throw new HostProtocolError("Cloudflare D1 statement must be an object");
+  }
+  requireD1Fields(statement, ["sql", "params"]);
+  if (typeof statement.sql !== "string" || statement.sql.length === 0 || statement.sql.includes("\0")) {
+    throw new HostArgumentError("Cloudflare D1 SQL must be a non-empty string without NUL bytes");
+  }
+  if (!Array.isArray(statement.params)) {
+    throw new HostProtocolError("Cloudflare D1 params must be an array");
+  }
+  statement.params.forEach(validateD1Parameter);
+  return { sql: statement.sql, params: statement.params };
+}
+
+function validateD1Parameter(value) {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return;
+  if (typeof value === "number" && Number.isFinite(value) &&
+      (!Number.isInteger(value) || Number.isSafeInteger(value))) return;
+  throw new HostArgumentError("Cloudflare D1 params must contain only JSON scalar values and safe integers");
+}
+
+function prepareD1Statement(database, spec) {
+  let statement = database.prepare(spec.sql);
+  if (!statement || typeof statement.run !== "function" || typeof statement.first !== "function" ||
+      typeof statement.raw !== "function" || typeof statement.bind !== "function") {
+    throw new HostBindingError("Cloudflare D1 prepare did not return a prepared statement");
+  }
+  if (spec.params.length > 0) statement = statement.bind(...spec.params);
+  return statement;
+}
+
+async function executeD1Request(database, request) {
+  if (request.operation === "batch") {
+    return await database.batch(request.statements.map(spec => prepareD1Statement(database, spec)));
+  }
+
+  const statement = prepareD1Statement(database, request);
+  if (request.operation === "run") return await statement.run();
+  if (request.operation === "first") {
+    return request.column === null ? await statement.first() : await statement.first(request.column);
+  }
+  return request.columnNames
+    ? await statement.raw({ columnNames: true })
+    : await statement.raw();
+}
+
+function validateD1JsonValue(value, ancestors = new Set()) {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
+      throw new HostProtocolError("Cloudflare D1 returned a number outside the supported JSON range");
+    }
+    return;
+  }
+  if (!value || typeof value !== "object") {
+    throw new HostProtocolError("Cloudflare D1 returned a non-JSON value");
+  }
+  if (ancestors.has(value)) {
+    throw new HostProtocolError("Cloudflare D1 returned a circular value");
+  }
+  ancestors.add(value);
+  if (Array.isArray(value)) {
+    value.forEach(item => validateD1JsonValue(item, ancestors));
+  } else {
+    for (const item of Object.values(value)) validateD1JsonValue(item, ancestors);
+  }
+  ancestors.delete(value);
+}
+
 function decodeQueueMessage(message) {
   try {
     return strictDecoder.decode(message);
@@ -255,6 +406,7 @@ function isResourceBinding(value) {
     typeof value.get === "function" ||
     typeof value.put === "function" ||
     typeof value.send === "function" ||
+    typeof value.prepare === "function" ||
     typeof value.fetch === "function" ||
     typeof value.getByName === "function"
   );
@@ -384,6 +536,7 @@ export function createCloudflareBindings(env, bindingTypes) {
     createCloudflareKvBindings(env, types),
     createCloudflareQueueBindings(env, types),
     createCloudflareDurableObjectBindings(env, types),
+    createCloudflareD1Bindings(env, types),
     createFetchBindings(),
     createEnvironmentBindings(env, types),
   );
@@ -398,7 +551,7 @@ function normalizeBindingTypes(bindingTypes) {
     if (typeof name !== "string" || name.length === 0) {
       throw new TypeError("Cloudflare binding type contains an invalid name");
     }
-    if (type !== "kv" && type !== "queue" && type !== "durable_object") {
+    if (type !== "kv" && type !== "queue" && type !== "durable_object" && type !== "d1") {
       throw new TypeError(`Unsupported Cloudflare binding type for ${name}: ${type}`);
     }
     normalized[name] = type;

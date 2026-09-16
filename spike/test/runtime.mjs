@@ -409,6 +409,7 @@ await closeRuntime(kvRuntime);
 const namedKvStore = new Map();
 const namedKvOptions = new Map();
 const durableObjectStore = new Map();
+const runtimeD1Calls = [];
 const runtimeQueueMessages = [];
 const serializedDispatchEvents = [];
 let releaseFirstSerializedDispatch;
@@ -419,6 +420,36 @@ let markFirstSerializedDispatchStarted;
 const firstSerializedDispatchStarted = new Promise((resolve) => {
   markFirstSerializedDispatchStarted = resolve;
 });
+function createRuntimeD1Statement(sql, params = []) {
+  const write = sql.startsWith("INSERT");
+  const meta = {
+    duration: 0.5,
+    changes: write ? 1 : 0,
+    last_row_id: write ? runtimeD1Calls.length + 100 : 0,
+    changed_db: write,
+    rows_read: write ? 0 : 1,
+    rows_written: write ? 1 : 0,
+  };
+  const row = { id: params[0] ?? 1, name: params[1] ?? "Alice" };
+  return {
+    bind(...values) {
+      return createRuntimeD1Statement(sql, values);
+    },
+    async run() {
+      runtimeD1Calls.push(["run", sql, params]);
+      return { success: true, meta, results: write ? [] : [row] };
+    },
+    async first(column) {
+      runtimeD1Calls.push(["first", sql, params, column]);
+      return column === undefined ? row : row[column];
+    },
+    async raw(options) {
+      runtimeD1Calls.push(["raw", sql, params, options]);
+      const rows = [[row.id, row.name]];
+      return options?.columnNames ? [["id", "name"], ...rows] : rows;
+    },
+  };
+}
 const runtimeWorkerEnv = {
   TEXT_VALUE: "worker-value",
   JSON_VALUE: { retries: 3 },
@@ -474,6 +505,15 @@ const runtimeWorkerEnv = {
       };
     },
   },
+  DB: {
+    prepare(sql) {
+      return createRuntimeD1Statement(sql);
+    },
+    async batch(statements) {
+      runtimeD1Calls.push(["batch", statements.length]);
+      return await Promise.all(statements.map(statement => statement.run()));
+    },
+  },
 };
 const runtimeWarnings = [];
 const originalConsoleError = console.error;
@@ -490,6 +530,7 @@ try {
       SECOND_KV: "kv",
       BROKEN_KV: "kv",
       OBJECTS: "durable_object",
+      DB: "d1",
     }),
   );
 } finally {
@@ -703,6 +744,66 @@ for (const name of ["invalid", "invalid-conversion", "invalid-nested", "circular
   assert.match(await response.text(), /argument-error=Cloudflare Durable Object/);
   assert.equal(durableObjectStore.has(name), false);
 }
+
+const d1RunResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/d1/run"),
+);
+assert.equal(
+  await d1RunResponse.text(),
+  "[Cloudflare::D1::Result, true, Cloudflare::D1::Row, 7, \"Alice\", 0, 0, 0.5, 1, 0, false]",
+);
+
+const d1QueryResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/d1/query"),
+);
+assert.equal(await d1QueryResponse.text(), '[8, "Bob"]');
+
+const d1FirstResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/d1/first"),
+);
+assert.equal(await d1FirstResponse.text(), '[9, "Carol", "Dave", []]');
+
+const d1RawResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/d1/raw"),
+);
+assert.equal(await d1RawResponse.text(), '[["id", "name"], [11, "Eve"]]');
+
+const d1BatchResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/d1/batch"),
+);
+assert.match(
+  await d1BatchResponse.text(),
+  /^\[\[Cloudflare::D1::Result, Cloudflare::D1::Result\], \[1, 1\], \[\d+, \d+\]\]$/,
+);
+
+const d1InvalidParamResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/d1/invalid-param"),
+);
+assert.equal(await d1InvalidParamResponse.text(), "[ArgumentError, ArgumentError, ArgumentError]");
+
+const d1EmptyBatchResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/d1/empty-batch"),
+);
+assert.match(await d1EmptyBatchResponse.text(), /argument-error=Cloudflare D1 batch requires/);
+
+const d1ImmutableResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/d1/immutable"),
+);
+assert.equal(await d1ImmutableResponse.text(), '[12, "Frank", true, true, true]');
+
+const d1AliasResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/d1/from-env-alias"),
+);
+assert.equal(await d1AliasResponse.text(), "same");
 
 const typeErrorResponse = await dispatch(
   bindingsRuntime,

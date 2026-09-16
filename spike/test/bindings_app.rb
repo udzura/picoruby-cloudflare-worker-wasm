@@ -182,6 +182,71 @@ class BindingsApp
       rescue ArgumentError => error
         [200, { "content-type" => "text/plain" }, ["argument-error=#{error.message}"]]
       end
+    when "/d1/run"
+      result = env["cloudflare.env"].DB.prepare("SELECT ?1 AS id, ?2 AS name").bind(7, "Alice").run
+      row = result.rows[0]
+      [200, { "content-type" => "text/plain" }, [[
+        result.class, result.success?, row.class, row[:id], row["name"],
+        result.changes, result.last_row_id, result.duration,
+        result.rows_read, result.rows_written, result.changed_db?,
+      ].inspect]]
+    when "/d1/query"
+      rows = Cloudflare::D1.from_env(env, "DB")
+        .query("SELECT ?1 AS id, ?2 AS name", 8, "Bob")
+        .rows
+      [200, { "content-type" => "text/plain" }, [[rows[0][:id], rows[0][:name]].inspect]]
+    when "/d1/first"
+      statement = env["cloudflare.env"].DB.prepare("SELECT ?1 AS id, ?2 AS name")
+      first = statement.bind(9, "Carol").first
+      name = statement.bind(10, "Dave").first(:name)
+      [200, { "content-type" => "text/plain" }, [[first[:id], first[:name], name, statement.params].inspect]]
+    when "/d1/raw"
+      rows = env["cloudflare.env"].DB
+        .query("SELECT ?1 AS id, ?2 AS name", 11, "Eve")
+        .raw(column_names: true)
+      [200, { "content-type" => "text/plain" }, [rows.inspect]]
+    when "/d1/batch"
+      db = env["cloudflare.env"].DB
+      results = db.batch([
+        db.query("INSERT INTO users (name) VALUES (?1)", "Alice"),
+        db.query("INSERT INTO users (name) VALUES (?1)", "Bob"),
+      ])
+      [200, { "content-type" => "text/plain" }, [[
+        results.map { |result| result.class },
+        results.map { |result| result.changes },
+        results.map { |result| result.last_row_id },
+      ].inspect]]
+    when "/d1/invalid-param"
+      errors = [Object.new, 9_007_199_254_740_992, 1.0 / 0.0].map do |value|
+        begin
+          env["cloudflare.env"].DB.query("SELECT ?1", value)
+          "missing"
+        rescue ArgumentError => error
+          error.class
+        end
+      end
+      [200, { "content-type" => "text/plain" }, [errors.inspect]]
+    when "/d1/empty-batch"
+      begin
+        env["cloudflare.env"].DB.batch([])
+      rescue ArgumentError => error
+        [200, { "content-type" => "text/plain" }, ["argument-error=#{error.message}"]]
+      end
+    when "/d1/immutable"
+      sql = "SELECT ?1 AS id, ?2 AS name"
+      name = "Frank"
+      statement = env["cloudflare.env"].DB.prepare(sql).bind(12, name)
+      sql.replace("SELECT 0")
+      name.replace("Changed")
+      row = statement.first
+      [200, { "content-type" => "text/plain" }, [[
+        row[:id], row[:name], statement.sql.frozen?, statement.params.frozen?,
+        statement.params[1].frozen?,
+      ].inspect]]
+    when "/d1/from-env-alias"
+      direct = env["cloudflare.env"].DB
+      explicit = Cloudflare::D1.from_env(env, "DB")
+      [200, { "content-type" => "text/plain" }, [direct.equal?(explicit) ? "same" : "different"]]
     when "/binding/type-error"
       begin
         Cloudflare::KV.from_env(env, "QUEUE_FOO")
