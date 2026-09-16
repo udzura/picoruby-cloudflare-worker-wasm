@@ -14,7 +14,8 @@ those files into `spike/src/` and `spike/scripts/` before building.
 See [spike/README.md](spike/README.md) for setup and build instructions.
 Cloudflare bindings are documented in [docs/cloudflare-env.md](docs/cloudflare-env.md),
 [docs/cloudflare-kv.md](docs/cloudflare-kv.md), and
-[docs/cloudflare-queue.md](docs/cloudflare-queue.md). Durable Object POJO storage is
+[docs/cloudflare-queue.md](docs/cloudflare-queue.md). D1 prepared statements are
+documented in [docs/cloudflare-d1.md](docs/cloudflare-d1.md). Durable Object POJO storage is
 documented in [docs/cloudflare-durable-object.md](docs/cloudflare-durable-object.md). Web Crypto bindings are
 documented in [docs/web-crypto.md](docs/web-crypto.md).
 
@@ -55,13 +56,14 @@ contract, limits, `Rack::Lint` results, and asynchronous roadmap.
 - named Cloudflare KV bindings with binary-safe `get` and `put` (`set`), optional `ttl:`, using JSPI;
 - Cloudflare Queue text-message producers using JSPI;
 - named Durable Objects storing JSON-compatible POJOs through JSPI;
+- D1 prepared statements, scalar binds, result modes, and transactional batches through JSPI;
 - buffered HTTP(S) text fetch using JSPI (see [fetch API](docs/cloudflare-fetch.md));
 - Web Crypto-backed `SecureRandom.random_number`, `SecureRandom.random_bytes`, and AES-GCM encryption;
 - Cloudflare Access Rack middleware (see [Access API](docs/cloudflare-access.md));
 - read-only Cloudflare text, JSON, and secret values through `ENV`;
 - request-scoped Worker binding access through Rack `cloudflare.env`;
 - no filesystem, sockets, runtime Ruby compilation,
-  other Cloudflare binding adapters, or streaming bodies.
+  D1 query builders, other Cloudflare binding adapters, or streaming bodies.
 
 `mruby-task` remains linked because it is required by `picoruby-mruby`, but the
 provided Worker HAL supports neither scheduling nor Fiber-based task APIs.

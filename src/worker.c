@@ -30,6 +30,7 @@
 #define PICORB_WORKER_MAX_QUEUE_MESSAGE_SIZE (128u * 1024u)
 #define PICORB_WORKER_MAX_DURABLE_OBJECT_NAME_SIZE 1024u
 #define PICORB_WORKER_MAX_DURABLE_OBJECT_JSON_SIZE (1u * 1024u * 1024u)
+#define PICORB_WORKER_MAX_D1_JSON_SIZE (8u * 1024u * 1024u)
 #define PICORB_WORKER_MAX_ENV_NAME_SIZE 1024u
 #define PICORB_WORKER_MAX_CRYPTO_DATA_SIZE (8u * 1024u * 1024u)
 #define PICORB_WORKER_AES_GCM_IV_SIZE 12u
@@ -162,6 +163,23 @@ EM_ASYNC_JS(int, picorb_worker_durable_object_put_bridge,
     UTF8ToString(binding_ptr, binding_len),
     UTF8ToString(name_ptr, name_len),
     UTF8ToString(json_ptr, json_len),
+  );
+  if (!(frame instanceof Uint8Array)) return -1;
+  const frameLen = frame.byteLength;
+  const framePtr = frameLen > 0 ? Module._malloc(frameLen) : 0;
+  if (frameLen > 0 && framePtr === 0) return -2;
+  if (frameLen > 0) HEAPU8.set(frame, framePtr);
+  HEAPU32[frame_ptr_ptr >>> 2] = framePtr;
+  HEAPU32[frame_len_ptr >>> 2] = frameLen;
+  return 0;
+});
+
+EM_ASYNC_JS(int, picorb_worker_d1_bridge,
+            (const char *binding_ptr, int binding_len, const char *request_ptr,
+             int request_len, uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr), {
+  const frame = await Module["picorbWorkerD1Bridge"](
+    UTF8ToString(binding_ptr, binding_len),
+    UTF8ToString(request_ptr, request_len),
   );
   if (!(frame instanceof Uint8Array)) return -1;
   const frameLen = frame.byteLength;
@@ -709,6 +727,53 @@ mrb_cloudflare_durable_object_put(mrb_state *mrb, mrb_value self)
 }
 
 static mrb_value
+mrb_cloudflare_d1_execute(mrb_state *mrb, mrb_value self)
+{
+  (void)self;
+  const char *binding;
+  const char *request;
+  mrb_int binding_len;
+  mrb_int request_len;
+  mrb_get_args(mrb, "ss", &binding, &binding_len, &request, &request_len);
+  if (binding_len > INT_MAX || request_len > INT_MAX) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "Cloudflare D1 binding name or request is too large");
+  }
+  validate_cloudflare_binding_name(mrb, binding, binding_len);
+  if (request_len <= 0 || request_len > PICORB_WORKER_MAX_D1_JSON_SIZE ||
+      memchr(request, '\0', request_len)) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid Cloudflare D1 JSON request");
+  }
+
+  uintptr_t frame_ptr = 0;
+  uint32_t frame_len = 0;
+  int status = picorb_worker_d1_bridge(
+    binding, (int)binding_len, request, (int)request_len,
+    (uintptr_t)&frame_ptr, (uintptr_t)&frame_len
+  );
+  if (status < 0) {
+    raise_cloudflare_error(mrb, "ProtocolError", "Cloudflare D1 bridge failed");
+  }
+
+  picorb_worker_host_result result;
+  if (!decode_host_result((const uint8_t *)frame_ptr, frame_len, &result)) {
+    free((void *)frame_ptr);
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare D1 host result");
+  }
+  if (result.kind >= PICORB_WORKER_HOST_ERROR) {
+    raise_host_result_error(mrb, &result, frame_ptr);
+  }
+  if (result.kind != PICORB_WORKER_HOST_OK ||
+      result.payload_len > PICORB_WORKER_MAX_D1_JSON_SIZE) {
+    free((void *)frame_ptr);
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare D1 result");
+  }
+
+  mrb_value json = mrb_str_new(mrb, (const char *)result.payload, result.payload_len);
+  free((void *)frame_ptr);
+  return json;
+}
+
+static mrb_value
 mrb_cloudflare_fetch(mrb_state *mrb, mrb_value self)
 {
   (void)self;
@@ -1192,6 +1257,8 @@ mrb_picoruby_worker_wasm_gem_init(mrb_state *mrb)
                              mrb_cloudflare_durable_object_get, MRB_ARGS_REQ(2));
   mrb_define_module_function(mrb, cloudflare, "__durable_object_put",
                              mrb_cloudflare_durable_object_put, MRB_ARGS_REQ(3));
+  mrb_define_module_function(mrb, cloudflare, "__d1_execute",
+                             mrb_cloudflare_d1_execute, MRB_ARGS_REQ(2));
   mrb_define_module_function(mrb, cloudflare, "__fetch", mrb_cloudflare_fetch,
                              MRB_ARGS_REQ(2));
   mrb_define_module_function(mrb, cloudflare, "__env_get_raw", mrb_cloudflare_env_get, MRB_ARGS_REQ(1));

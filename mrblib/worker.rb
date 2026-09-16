@@ -581,6 +581,8 @@ module Cloudflare
           value = Queue.__build(binding_name)
         elsif type == "durable_object"
           value = DurableObject.__build(binding_name)
+        elsif type == "d1"
+          value = D1.__build(binding_name)
         else
           present, value = Cloudflare.__env_lookup(binding_name)
           return MISSING unless present
@@ -708,6 +710,193 @@ module Cloudflare
       Cloudflare.__durable_object_put(@binding_name, name, JSON.generate(POJO.wrap(value)))
     rescue JSON::JSONError => error
       raise ArgumentError, "Cloudflare Durable Object POJO is not JSON serializable: #{error.message}"
+    end
+  end
+
+  class D1 < Binding
+    JAVASCRIPT_MAX_SAFE_INTEGER = 9_007_199_254_740_991
+
+    class Row < Hash
+      def self.wrap(value)
+        unless value.is_a?(Hash)
+          raise ProtocolError, "Cloudflare D1 row must be an object"
+        end
+        row = new
+        value.each { |key, item| row[key.to_s] = item }
+        row
+      end
+
+      def [](key)
+        super(key.is_a?(Symbol) ? key.to_s : key)
+      end
+    end
+
+    class Result
+      attr_reader :rows, :meta
+
+      def initialize(data)
+        unless data.is_a?(Hash) && (data["success"] == true || data["success"] == false)
+          raise ProtocolError, "Cloudflare D1 result must contain a success flag"
+        end
+        unless data["meta"].is_a?(Hash)
+          raise ProtocolError, "Cloudflare D1 result meta must be an object"
+        end
+        results = data["results"]
+        unless results.nil? || results.is_a?(Array)
+          raise ProtocolError, "Cloudflare D1 result rows must be an array or nil"
+        end
+
+        @success = data["success"]
+        @meta = data["meta"]
+        @rows = (results || []).map { |row| Row.wrap(row) }
+      end
+
+      def success?
+        @success
+      end
+
+      def changes
+        @meta["changes"]
+      end
+
+      def last_row_id
+        @meta["last_row_id"]
+      end
+
+      def duration
+        @meta["duration"]
+      end
+
+      def rows_read
+        @meta["rows_read"]
+      end
+
+      def rows_written
+        @meta["rows_written"]
+      end
+
+      def changed_db?
+        @meta["changed_db"] == true
+      end
+    end
+
+    class Statement
+      attr_reader :binding_name, :sql, :params
+
+      def initialize(binding_name, sql, params = [])
+        @binding_name = binding_name
+        @sql = D1.__normalize_sql(sql)
+        @params = D1.__normalize_params(params)
+      end
+
+      def bind(*params)
+        self.class.new(@binding_name, @sql, params)
+      end
+
+      def run
+        Result.new(__execute("run"))
+      end
+
+      def rows
+        run.rows
+      end
+
+      def first(column = nil)
+        unless column.nil? || column.is_a?(String) || column.is_a?(Symbol)
+          raise ArgumentError, "Cloudflare D1 first column must be a String, Symbol, or nil"
+        end
+        column = column.to_s unless column.nil?
+        raise ArgumentError, "Cloudflare D1 first column must not be empty" if column == ""
+
+        value = __execute("first", "column" => column)
+        value.is_a?(Hash) ? Row.wrap(value) : value
+      end
+
+      def raw(column_names: false)
+        unless column_names == true || column_names == false
+          raise ArgumentError, "Cloudflare D1 raw column_names must be boolean"
+        end
+        value = __execute("raw", "columnNames" => column_names)
+        raise ProtocolError, "Cloudflare D1 raw result must be an array" unless value.is_a?(Array)
+
+        value
+      end
+
+      def __spec
+        { "sql" => @sql, "params" => @params }
+      end
+
+      private
+
+      def __execute(operation, extra = {})
+        request = { "operation" => operation, "sql" => @sql, "params" => @params }
+        extra.each { |key, value| request[key] = value }
+        D1.__parse_response(Cloudflare.__d1_execute(@binding_name, JSON.generate(request)))
+      rescue JSON::JSONError => error
+        raise ProtocolError, "invalid Cloudflare D1 JSON: #{error.message}"
+      end
+    end
+
+    def prepare(sql)
+      Statement.new(@binding_name, sql)
+    end
+
+    def query(sql, *params)
+      prepare(sql).bind(*params)
+    end
+
+    def batch(statements)
+      unless statements.is_a?(Array) && !statements.empty?
+        raise ArgumentError, "Cloudflare D1 batch requires a non-empty Array"
+      end
+      specs = statements.map do |statement|
+        unless statement.is_a?(Statement) && statement.binding_name == @binding_name
+          raise ArgumentError, "Cloudflare D1 batch statements must belong to the same binding"
+        end
+        statement.__spec
+      end
+      request = { "operation" => "batch", "statements" => specs }
+      value = self.class.__parse_response(
+        Cloudflare.__d1_execute(@binding_name, JSON.generate(request))
+      )
+      raise ProtocolError, "Cloudflare D1 batch result must be an array" unless value.is_a?(Array)
+
+      value.map { |result| Result.new(result) }
+    rescue JSON::JSONError => error
+      raise ProtocolError, "invalid Cloudflare D1 JSON: #{error.message}"
+    end
+
+    def self.__normalize_sql(sql)
+      unless sql.is_a?(String) && !sql.empty? && !sql.include?("\0")
+        raise ArgumentError, "Cloudflare D1 SQL must be a non-empty String without NUL bytes"
+      end
+      sql.dup.freeze
+    end
+
+    def self.__normalize_params(params)
+      params.map do |value|
+        if value.is_a?(Integer)
+          if value < -JAVASCRIPT_MAX_SAFE_INTEGER || value > JAVASCRIPT_MAX_SAFE_INTEGER
+            raise ArgumentError, "Cloudflare D1 Integer params must be JavaScript safe integers"
+          end
+          value
+        elsif value.is_a?(Float)
+          raise ArgumentError, "Cloudflare D1 Float params must be finite" unless value.finite?
+          value
+        elsif value.nil? || value == true || value == false
+          value
+        elsif value.is_a?(String)
+          value.dup.freeze
+        else
+          raise ArgumentError, "Cloudflare D1 params must be nil, String, Integer, Float, or boolean"
+        end
+      end.freeze
+    end
+
+    def self.__parse_response(json)
+      JSON.parse(json)
+    rescue JSON::JSONError => error
+      raise ProtocolError, "invalid Cloudflare D1 JSON: #{error.message}"
     end
   end
 

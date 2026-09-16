@@ -4,6 +4,7 @@ const RESOURCE_BINDINGS = [
   { section: "kv_namespaces", subsection: null, nameField: "binding", type: "kv" },
   { section: "queues", subsection: "producers", nameField: "binding", type: "queue" },
   { section: "durable_objects", subsection: "bindings", nameField: "name", type: "durable_object" },
+  { section: "d1_databases", subsection: null, nameField: "binding", type: "d1" },
 ];
 
 export function parseCloudflareBindingTypes(source, environment = null) {
