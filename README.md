@@ -109,7 +109,7 @@ precompiled `WebAssembly.Module` through Emscripten's `instantiateWasm` hook.
 
 ## C ABI
 
-ABI version 1 exports:
+ABI version 2 exports:
 
 ```text
 picorb_worker_abi_version()
@@ -132,7 +132,8 @@ non-zero status code.
 The v1 request frame begins with `PRQ1`; the response frame begins with `PRR1`.
 All integers are unsigned 32-bit little-endian values and all variable data is
 encoded as `byte_length` followed by exactly that many bytes. The complete
-layout is documented in [docs/abi-v1.md](docs/abi-v1.md).
+layout is documented in [docs/abi-v2.md](docs/abi-v2.md). The earlier
+[ABI v1](docs/abi-v1.md) document is retained for historical compatibility.
 
 ## Tests
 

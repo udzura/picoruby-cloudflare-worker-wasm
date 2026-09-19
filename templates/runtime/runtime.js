@@ -1,6 +1,7 @@
 import {
   captureHostCall,
   captureHostCallSync,
+  decodeHostCall,
   HostArgumentError,
   HostBindingError,
   HostProtocolError,
@@ -11,7 +12,7 @@ import {
   utf8,
 } from "./host-bridge.js";
 
-const ABI_VERSION = 1;
+const ABI_VERSION = 2;
 const REQUEST_MAGIC = new Uint8Array([0x50, 0x52, 0x51, 0x31]); // PRQ1
 const RESPONSE_MAGIC = new Uint8Array([0x50, 0x52, 0x52, 0x31]); // PRR1
 const DEFAULT_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
@@ -46,13 +47,7 @@ const defaultRuntimeBindings = {
     await Promise.resolve();
     return left + right;
   },
-  picorbWorkerKvGetBridge: unavailableHostBridge,
-  picorbWorkerKvPutBridge: unavailableHostBridge,
-  picorbWorkerQueueSendBridge: unavailableHostBridge,
-  picorbWorkerDurableObjectGetBridge: unavailableHostBridge,
-  picorbWorkerDurableObjectPutBridge: unavailableHostBridge,
-  picorbWorkerD1Bridge: unavailableHostBridge,
-  picorbWorkerFetchBridge: unavailableHostBridge,
+  picorbWorkerHostCallBridge: unavailableHostBridge,
   picorbWorkerEnvGetBridge: unavailableEnvironmentBridge,
   picorbWorkerEnvBindingTypeBridge: unavailableEnvironmentBridge,
 };
@@ -532,14 +527,81 @@ export function createFetchBindings(fetcher = (...args) => globalThis.fetch(...a
 
 export function createCloudflareBindings(env, bindingTypes) {
   const types = normalizeBindingTypes(bindingTypes);
-  return mergeBindings(
+  const operationBindings = mergeBindings(
     createCloudflareKvBindings(env, types),
     createCloudflareQueueBindings(env, types),
     createCloudflareDurableObjectBindings(env, types),
     createCloudflareD1Bindings(env, types),
     createFetchBindings(),
+  );
+  const operations = {
+    "kv.get": ([key], bindingName) => operationBindings.picorbWorkerKvGetBridge(bindingName, key),
+    "kv.put": ([key, value, options], bindingName) => operationBindings.picorbWorkerKvPutBridge(
+      bindingName, key, value, decodeHostCallText(options),
+    ),
+    "queue.send": ([message], bindingName) => operationBindings.picorbWorkerQueueSendBridge(
+      bindingName, message,
+    ),
+    "durable_object.get": ([name], bindingName) => operationBindings.picorbWorkerDurableObjectGetBridge(
+      bindingName, decodeHostCallText(name),
+    ),
+    "durable_object.put": ([name, json], bindingName) => operationBindings.picorbWorkerDurableObjectPutBridge(
+      bindingName, decodeHostCallText(name), decodeHostCallText(json),
+    ),
+    "d1.execute": ([request], bindingName) => operationBindings.picorbWorkerD1Bridge(
+      bindingName, decodeHostCallText(request),
+    ),
+    "fetch": ([url, options], bindingName) => {
+      if (bindingName !== "") return protocolErrorFrame("Cloudflare fetch does not use a binding");
+      return operationBindings.picorbWorkerFetchBridge(
+        decodeHostCallText(url), decodeHostCallText(options),
+      );
+    },
+  };
+  const arities = {
+    "kv.get": 1,
+    "kv.put": 3,
+    "queue.send": 1,
+    "durable_object.get": 1,
+    "durable_object.put": 2,
+    "d1.execute": 1,
+    "fetch": 2,
+  };
+  return mergeBindings(
+    {
+      picorbWorkerHostCallBridge: async (frame) => {
+        let call;
+        try {
+          call = decodeHostCall(frame);
+        } catch (error) {
+          return protocolErrorFrame(error instanceof Error ? error.message : String(error));
+        }
+        const operation = operations[call.operation];
+        if (!operation) return protocolErrorFrame(`Unsupported Cloudflare host operation: ${call.operation}`);
+        if (call.args.length !== arities[call.operation]) {
+          return protocolErrorFrame(`Invalid argument count for Cloudflare host operation: ${call.operation}`);
+        }
+        try {
+          return await operation(call.args, call.bindingName);
+        } catch (error) {
+          return protocolErrorFrame(error instanceof Error ? error.message : String(error));
+        }
+      },
+    },
     createEnvironmentBindings(env, types),
   );
+}
+
+function decodeHostCallText(bytes) {
+  try {
+    return strictDecoder.decode(bytes);
+  } catch {
+    throw new HostProtocolError("Cloudflare host call text must be valid UTF-8");
+  }
+}
+
+function protocolErrorFrame(message) {
+  return encodeHostResult(HostResultKind.protocolError, utf8(message));
 }
 
 function normalizeBindingTypes(bindingTypes) {

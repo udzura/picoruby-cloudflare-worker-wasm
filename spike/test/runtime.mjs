@@ -16,10 +16,23 @@ import {
 } from "../src/runtime.js";
 import {
   captureHostCall,
+  decodeHostCall,
   decodeHostResult,
+  encodeHostCall,
   HostResultKind,
   hostErrorMessage,
 } from "../src/host-bridge.js";
+
+const encodedHostCall = encodeHostCall("kv.put", "CACHE_KV", [
+  new TextEncoder().encode("key"),
+  new Uint8Array([0, 255]),
+]);
+assert.deepEqual(decodeHostCall(encodedHostCall), {
+  operation: "kv.put",
+  bindingName: "CACHE_KV",
+  args: [new TextEncoder().encode("key"), new Uint8Array([0, 255])],
+});
+assert.throws(() => decodeHostCall(new Uint8Array([0])), /Truncated PicoRuby host call/);
 
 let invalidOperationResult = decodeHostResult(await captureHostCall(async () => null));
 assert.equal(invalidOperationResult.kind, HostResultKind.protocolError);
@@ -34,6 +47,14 @@ const kvAppBytecode = fs.readFileSync(new URL("../dist/kv_app.bin", import.meta.
 const bindingsAppBytecode = fs.readFileSync(new URL("../dist/bindings_app.bin", import.meta.url));
 const cryptoAppBytecode = fs.readFileSync(new URL("../dist/crypto_app.bin", import.meta.url));
 const imports = WebAssembly.Module.imports(wasmModule);
+const cloudflareHostImports = imports
+  .map(({ name }) => name)
+  .filter(name => /picorb_worker_(?:host_call|kv_|queue_|durable_object_|d1_|fetch_)/.test(name));
+assert.deepEqual(
+  cloudflareHostImports,
+  ["__asyncjs__picorb_worker_host_call_bridge"],
+  "resource operations must share one asynchronous Wasm import",
+);
 const allowedWasiImports = new Set([
   "fd_close",
   "fd_fdstat_get",
@@ -902,7 +923,7 @@ const malformedBridgeRuntime = await createRuntime(
   bindingsAppBytecode,
   mergeBindings(
     createEnvironmentBindings({ SECOND_KV: {} }, { SECOND_KV: "kv" }),
-    { picorbWorkerKvGetBridge: async () => new Uint8Array([0]) },
+    { picorbWorkerHostCallBridge: async () => new Uint8Array([0]) },
   ),
 );
 const protocolErrorResponse = await dispatch(
