@@ -16,10 +16,23 @@ import {
 } from "../src/runtime.js";
 import {
   captureHostCall,
+  decodeHostCall,
   decodeHostResult,
+  encodeHostCall,
   HostResultKind,
   hostErrorMessage,
 } from "../src/host-bridge.js";
+
+const encodedHostCall = encodeHostCall("kv.put", "CACHE_KV", [
+  new TextEncoder().encode("key"),
+  new Uint8Array([0, 255]),
+]);
+assert.deepEqual(decodeHostCall(encodedHostCall), {
+  operation: "kv.put",
+  bindingName: "CACHE_KV",
+  args: [new TextEncoder().encode("key"), new Uint8Array([0, 255])],
+});
+assert.throws(() => decodeHostCall(new Uint8Array([0])), /Truncated PicoRuby host call/);
 
 let invalidOperationResult = decodeHostResult(await captureHostCall(async () => null));
 assert.equal(invalidOperationResult.kind, HostResultKind.protocolError);
@@ -34,6 +47,14 @@ const kvAppBytecode = fs.readFileSync(new URL("../dist/kv_app.bin", import.meta.
 const bindingsAppBytecode = fs.readFileSync(new URL("../dist/bindings_app.bin", import.meta.url));
 const cryptoAppBytecode = fs.readFileSync(new URL("../dist/crypto_app.bin", import.meta.url));
 const imports = WebAssembly.Module.imports(wasmModule);
+const cloudflareHostImports = imports
+  .map(({ name }) => name)
+  .filter(name => /picorb_worker_(?:host_call|kv_|queue_|durable_object_|d1_|fetch_)/.test(name));
+assert.deepEqual(
+  cloudflareHostImports,
+  ["__asyncjs__picorb_worker_host_call_bridge"],
+  "resource operations must share one asynchronous Wasm import",
+);
 const allowedWasiImports = new Set([
   "fd_close",
   "fd_fdstat_get",
@@ -410,6 +431,8 @@ const namedKvStore = new Map();
 const namedKvOptions = new Map();
 const durableObjectStore = new Map();
 const runtimeD1Calls = [];
+const runtimeAiCalls = [];
+const runtimeVectorizeCalls = [];
 const runtimeQueueMessages = [];
 const serializedDispatchEvents = [];
 let releaseFirstSerializedDispatch;
@@ -514,6 +537,48 @@ const runtimeWorkerEnv = {
       return await Promise.all(statements.map(statement => statement.run()));
     },
   },
+  AI: {
+    async run(model, input) {
+      runtimeAiCalls.push([model, input]);
+      if (model === "@cf/test/embedding") {
+        return { data: [[0.1, 0.2], [0.3, 0.4]], shape: [2, 2], pooling: "mean" };
+      }
+      if (model === "@cf/test/invalid-embedding") {
+        return { data: [[0.1]], shape: [1, 2] };
+      }
+      return { response: `answer:${input.prompt}`, usage: { total_tokens: 7 } };
+    },
+  },
+  VECTOR_INDEX: {
+    async query(vector, options) {
+      runtimeVectorizeCalls.push(["query", vector, options]);
+      return { count: 1, matches: [{ id: "one", score: 0.9, values: vector, metadata: { kind: "post" } }] };
+    },
+    async queryById(id, options) {
+      runtimeVectorizeCalls.push(["queryById", id, options]);
+      return { count: 1, matches: [{ id: `${id}-match`, score: 0.8 }] };
+    },
+    async insert(vectors) {
+      runtimeVectorizeCalls.push(["insert", vectors]);
+      return { count: vectors.length, ids: vectors.map(vector => vector.id) };
+    },
+    async upsert(vectors) {
+      runtimeVectorizeCalls.push(["upsert", vectors]);
+      return { count: vectors.length, ids: vectors.map(vector => vector.id) };
+    },
+    async getByIds(ids) {
+      runtimeVectorizeCalls.push(["getByIds", ids]);
+      return ids.map(id => ({ id, values: [0.1, 0.2] }));
+    },
+    async deleteByIds(ids) {
+      runtimeVectorizeCalls.push(["deleteByIds", ids]);
+      return { count: ids.length, ids };
+    },
+    async describe() {
+      runtimeVectorizeCalls.push(["describe"]);
+      return { dimensions: 2, vectorCount: 1 };
+    },
+  },
 };
 const runtimeWarnings = [];
 const originalConsoleError = console.error;
@@ -531,6 +596,8 @@ try {
       BROKEN_KV: "kv",
       OBJECTS: "durable_object",
       DB: "d1",
+      AI: "ai",
+      VECTOR_INDEX: "vectorize",
     }),
   );
 } finally {
@@ -805,6 +872,86 @@ const d1AliasResponse = await dispatch(
 );
 assert.equal(await d1AliasResponse.text(), "same");
 
+const aiRunResponse = await dispatch(bindingsRuntime, new Request("https://example.com/ai/run"));
+assert.equal(await aiRunResponse.text(), '["answer:Hello", 7]');
+assert.deepEqual(runtimeAiCalls, [[
+  "@cf/test/model", { prompt: "Hello", temperature: 0.25 },
+]]);
+
+const aiGenerateResponse = await dispatch(bindingsRuntime, new Request("https://example.com/ai/generate"));
+assert.equal(
+  await aiGenerateResponse.text(),
+  '[Cloudflare::AI::TextGenerationResult, "answer:Hello", 7, "answer:Hello"]',
+);
+
+const aiEmbedResponse = await dispatch(bindingsRuntime, new Request("https://example.com/ai/embed"));
+assert.equal(
+  await aiEmbedResponse.text(),
+  '[Cloudflare::AI::EmbeddingResult, 2, 2, [0.1, 0.2], [0.3, 0.4], [2, 2], "mean", [2, 2]]',
+);
+
+const aiInvalidEmbeddingResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/ai/embed-invalid"),
+);
+assert.equal(
+  await aiInvalidEmbeddingResponse.text(),
+  "protocol-error=Cloudflare AI embedding data does not match its shape",
+);
+
+const aiAliasResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/ai/from-env-alias"),
+);
+assert.equal(await aiAliasResponse.text(), "same");
+
+const aiStreamResponse = await dispatch(bindingsRuntime, new Request("https://example.com/ai/stream"));
+assert.equal(
+  await aiStreamResponse.text(),
+  "argument-error=Cloudflare AI streaming is not supported",
+);
+
+const vectorizeQueryResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/vectorize/query"),
+);
+assert.equal(await vectorizeQueryResponse.text(), '[1, "one", 0.9, "post"]');
+assert.deepEqual(runtimeVectorizeCalls[0], [
+  "query", [0.1, 0.2, 0.3], {
+    topK: 2, returnValues: true, returnMetadata: "all", namespace: "docs", filter: { kind: "post" },
+  },
+]);
+
+const vectorizeQueryByIdResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/vectorize/query-by-id"),
+);
+assert.equal(await vectorizeQueryByIdResponse.text(), '["seed-match"]');
+
+const vectorizeMutationsResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/vectorize/mutations"),
+);
+assert.equal(await vectorizeMutationsResponse.text(), "[1, 1, \"one\", 1, 2]");
+assert.deepEqual(runtimeVectorizeCalls.slice(2).map(call => call[0]), [
+  "insert", "upsert", "getByIds", "deleteByIds", "describe",
+]);
+
+const vectorizeAliasResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/vectorize/from-env-alias"),
+);
+assert.equal(await vectorizeAliasResponse.text(), "same");
+
+const vectorizeInvalidTopKResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/vectorize/invalid-top-k"),
+);
+assert.equal(
+  await vectorizeInvalidTopKResponse.text(),
+  "argument-error=Cloudflare Vectorize topK must not exceed 50 when returning values or all metadata",
+);
+
 const typeErrorResponse = await dispatch(
   bindingsRuntime,
   new Request("https://example.com/binding/type-error"),
@@ -902,7 +1049,7 @@ const malformedBridgeRuntime = await createRuntime(
   bindingsAppBytecode,
   mergeBindings(
     createEnvironmentBindings({ SECOND_KV: {} }, { SECOND_KV: "kv" }),
-    { picorbWorkerKvGetBridge: async () => new Uint8Array([0]) },
+    { picorbWorkerHostCallBridge: async () => new Uint8Array([0]) },
   ),
 );
 const protocolErrorResponse = await dispatch(

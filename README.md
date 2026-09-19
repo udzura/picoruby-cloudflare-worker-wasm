@@ -16,7 +16,9 @@ Cloudflare bindings are documented in [docs/cloudflare-env.md](docs/cloudflare-e
 [docs/cloudflare-kv.md](docs/cloudflare-kv.md), and
 [docs/cloudflare-queue.md](docs/cloudflare-queue.md). D1 prepared statements are
 documented in [docs/cloudflare-d1.md](docs/cloudflare-d1.md). Durable Object POJO storage is
-documented in [docs/cloudflare-durable-object.md](docs/cloudflare-durable-object.md). Web Crypto bindings are
+documented in [docs/cloudflare-durable-object.md](docs/cloudflare-durable-object.md).
+Workers AI and Vectorize are documented in [docs/cloudflare-ai.md](docs/cloudflare-ai.md) and
+[docs/cloudflare-vectorize.md](docs/cloudflare-vectorize.md). Web Crypto bindings are
 documented in [docs/web-crypto.md](docs/web-crypto.md).
 
 An encrypted cookie-session example using the latest `mruby-rack` is available
@@ -57,6 +59,8 @@ contract, limits, `Rack::Lint` results, and asynchronous roadmap.
 - Cloudflare Queue text-message producers using JSPI;
 - named Durable Objects storing JSON-compatible POJOs through JSPI;
 - D1 prepared statements, scalar binds, result modes, and transactional batches through JSPI;
+- buffered, JSON-compatible Workers AI inference through `Cloudflare::AI`;
+- Vectorize queries and vector lifecycle operations through `Cloudflare::Vectorize`;
 - buffered HTTP(S) text fetch using JSPI (see [fetch API](docs/cloudflare-fetch.md));
 - Web Crypto-backed `SecureRandom.random_number`, `SecureRandom.random_bytes`, and AES-GCM encryption;
 - Cloudflare Access Rack middleware (see [Access API](docs/cloudflare-access.md));
@@ -109,7 +113,7 @@ precompiled `WebAssembly.Module` through Emscripten's `instantiateWasm` hook.
 
 ## C ABI
 
-ABI version 1 exports:
+ABI version 2 exports:
 
 ```text
 picorb_worker_abi_version()
@@ -132,7 +136,8 @@ non-zero status code.
 The v1 request frame begins with `PRQ1`; the response frame begins with `PRR1`.
 All integers are unsigned 32-bit little-endian values and all variable data is
 encoded as `byte_length` followed by exactly that many bytes. The complete
-layout is documented in [docs/abi-v1.md](docs/abi-v1.md).
+layout is documented in [docs/abi-v2.md](docs/abi-v2.md). The earlier
+[ABI v1](docs/abi-v1.md) document is retained for historical compatibility.
 
 ## Tests
 

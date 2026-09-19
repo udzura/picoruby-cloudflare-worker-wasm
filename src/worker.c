@@ -19,7 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define PICORB_WORKER_ABI_VERSION 1u
+#define PICORB_WORKER_ABI_VERSION 2u
 #define PICORB_WORKER_REQUEST_MAGIC "PRQ1"
 #define PICORB_WORKER_RESPONSE_MAGIC "PRR1"
 #define PICORB_WORKER_MAX_REQUEST_FRAME_SIZE (2u * 1024u * 1024u)
@@ -32,6 +32,11 @@
 #define PICORB_WORKER_MAX_DURABLE_OBJECT_JSON_SIZE (1u * 1024u * 1024u)
 #define PICORB_WORKER_MAX_D1_JSON_SIZE (8u * 1024u * 1024u)
 #define PICORB_WORKER_MAX_ENV_NAME_SIZE 1024u
+#define PICORB_WORKER_MAX_HOST_CALL_OPERATION_SIZE 64u
+#define PICORB_WORKER_MAX_HOST_CALL_ARGUMENTS 16u
+#define PICORB_WORKER_MAX_HOST_CALL_FRAME_SIZE (8u * 1024u * 1024u)
+#define PICORB_WORKER_MAX_HOST_RESULT_SIZE (8u * 1024u * 1024u)
+#define PICORB_WORKER_HOST_CALL_MAGIC "PHC1"
 #define PICORB_WORKER_MAX_CRYPTO_DATA_SIZE (8u * 1024u * 1024u)
 #define PICORB_WORKER_AES_GCM_IV_SIZE 12u
 #define PICORB_WORKER_AES_GCM_TAG_SIZE 16u
@@ -83,12 +88,11 @@ EM_ASYNC_JS(int, picorb_worker_jspi_add, (int left, int right), {
   return await Module["picorbWorkerJspiAdd"](left, right);
 });
 
-EM_ASYNC_JS(int, picorb_worker_kv_get_bridge,
-            (const char *binding_ptr, int binding_len, const char *key_ptr, int key_len,
+EM_ASYNC_JS(int, picorb_worker_host_call_bridge,
+            (const uint8_t *request_ptr, int request_len,
              uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr), {
-  const frame = await Module["picorbWorkerKvGetBridge"](
-    UTF8ToString(binding_ptr, binding_len),
-    HEAPU8.slice(key_ptr, key_ptr + key_len),
+  const frame = await Module["picorbWorkerHostCallBridge"](
+    HEAPU8.slice(request_ptr, request_ptr + request_len),
   );
   if (!(frame instanceof Uint8Array)) return -1;
   const frameLen = frame.byteLength;
@@ -100,113 +104,146 @@ EM_ASYNC_JS(int, picorb_worker_kv_get_bridge,
   return 0;
 });
 
-EM_ASYNC_JS(int, picorb_worker_kv_put_bridge,
-            (const char *binding_ptr, int binding_len, const char *key_ptr, int key_len,
-             const uint8_t *value_ptr, int value_len, const char *options_ptr,
-             int options_len, uintptr_t frame_ptr_ptr,
-             uintptr_t frame_len_ptr), {
-  const frame = await Module["picorbWorkerKvPutBridge"](
-    UTF8ToString(binding_ptr, binding_len),
-    HEAPU8.slice(key_ptr, key_ptr + key_len),
-    HEAPU8.slice(value_ptr, value_ptr + value_len),
-    UTF8ToString(options_ptr, options_len),
-  );
-  if (!(frame instanceof Uint8Array)) return -1;
-  const frameLen = frame.byteLength;
-  const framePtr = frameLen > 0 ? Module._malloc(frameLen) : 0;
-  if (frameLen > 0 && framePtr === 0) return -2;
-  if (frameLen > 0) HEAPU8.set(frame, framePtr);
-  HEAPU32[frame_ptr_ptr >>> 2] = framePtr;
-  HEAPU32[frame_len_ptr >>> 2] = frameLen;
-  return 0;
-});
+static void
+write_u32_le(uint8_t *ptr, uint32_t value)
+{
+  ptr[0] = (uint8_t)value;
+  ptr[1] = (uint8_t)(value >> 8);
+  ptr[2] = (uint8_t)(value >> 16);
+  ptr[3] = (uint8_t)(value >> 24);
+}
 
-EM_ASYNC_JS(int, picorb_worker_queue_send_bridge,
-            (const char *binding_ptr, int binding_len, const uint8_t *message_ptr,
-             int message_len, uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr), {
-  const frame = await Module["picorbWorkerQueueSendBridge"](
-    UTF8ToString(binding_ptr, binding_len),
-    HEAPU8.slice(message_ptr, message_ptr + message_len),
-  );
-  if (!(frame instanceof Uint8Array)) return -1;
-  const frameLen = frame.byteLength;
-  const framePtr = frameLen > 0 ? Module._malloc(frameLen) : 0;
-  if (frameLen > 0 && framePtr === 0) return -2;
-  if (frameLen > 0) HEAPU8.set(frame, framePtr);
-  HEAPU32[frame_ptr_ptr >>> 2] = framePtr;
-  HEAPU32[frame_len_ptr >>> 2] = frameLen;
-  return 0;
-});
+static int
+picorb_worker_host_call(const char *operation, size_t operation_len,
+                        const char *binding, size_t binding_len,
+                        const uint8_t **arguments, const size_t *argument_lens,
+                        size_t argument_count, uintptr_t frame_ptr_ptr,
+                        uintptr_t frame_len_ptr)
+{
+  if (operation_len == 0 || operation_len > PICORB_WORKER_MAX_HOST_CALL_OPERATION_SIZE ||
+      binding_len > PICORB_WORKER_MAX_BINDING_NAME_SIZE ||
+      argument_count > PICORB_WORKER_MAX_HOST_CALL_ARGUMENTS) {
+    return -3;
+  }
 
-EM_ASYNC_JS(int, picorb_worker_durable_object_get_bridge,
-            (const char *binding_ptr, int binding_len, const char *name_ptr, int name_len,
-             uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr), {
-  const frame = await Module["picorbWorkerDurableObjectGetBridge"](
-    UTF8ToString(binding_ptr, binding_len),
-    UTF8ToString(name_ptr, name_len),
-  );
-  if (!(frame instanceof Uint8Array)) return -1;
-  const frameLen = frame.byteLength;
-  const framePtr = frameLen > 0 ? Module._malloc(frameLen) : 0;
-  if (frameLen > 0 && framePtr === 0) return -2;
-  if (frameLen > 0) HEAPU8.set(frame, framePtr);
-  HEAPU32[frame_ptr_ptr >>> 2] = framePtr;
-  HEAPU32[frame_len_ptr >>> 2] = frameLen;
-  return 0;
-});
+  size_t request_len = 4 + 4 + operation_len + 4 + binding_len + 4;
+  for (size_t index = 0; index < argument_count; index++) {
+    if (argument_lens[index] > UINT32_MAX ||
+        argument_lens[index] > PICORB_WORKER_MAX_HOST_CALL_FRAME_SIZE - 4 ||
+        request_len > PICORB_WORKER_MAX_HOST_CALL_FRAME_SIZE - 4 - argument_lens[index]) {
+      return -3;
+    }
+    request_len += 4 + argument_lens[index];
+  }
+  if (request_len > PICORB_WORKER_MAX_HOST_CALL_FRAME_SIZE || request_len > INT_MAX) {
+    return -3;
+  }
 
-EM_ASYNC_JS(int, picorb_worker_durable_object_put_bridge,
-            (const char *binding_ptr, int binding_len, const char *name_ptr, int name_len,
-             const char *json_ptr, int json_len, uintptr_t frame_ptr_ptr,
-             uintptr_t frame_len_ptr), {
-  const frame = await Module["picorbWorkerDurableObjectPutBridge"](
-    UTF8ToString(binding_ptr, binding_len),
-    UTF8ToString(name_ptr, name_len),
-    UTF8ToString(json_ptr, json_len),
-  );
-  if (!(frame instanceof Uint8Array)) return -1;
-  const frameLen = frame.byteLength;
-  const framePtr = frameLen > 0 ? Module._malloc(frameLen) : 0;
-  if (frameLen > 0 && framePtr === 0) return -2;
-  if (frameLen > 0) HEAPU8.set(frame, framePtr);
-  HEAPU32[frame_ptr_ptr >>> 2] = framePtr;
-  HEAPU32[frame_len_ptr >>> 2] = frameLen;
-  return 0;
-});
+  uint8_t *request = (uint8_t *)malloc(request_len);
+  if (!request) return -2;
+  uint8_t *cursor = request;
+  memcpy(cursor, PICORB_WORKER_HOST_CALL_MAGIC, 4);
+  cursor += 4;
+  write_u32_le(cursor, (uint32_t)operation_len);
+  cursor += 4;
+  memcpy(cursor, operation, operation_len);
+  cursor += operation_len;
+  write_u32_le(cursor, (uint32_t)binding_len);
+  cursor += 4;
+  memcpy(cursor, binding, binding_len);
+  cursor += binding_len;
+  write_u32_le(cursor, (uint32_t)argument_count);
+  cursor += 4;
+  for (size_t index = 0; index < argument_count; index++) {
+    write_u32_le(cursor, (uint32_t)argument_lens[index]);
+    cursor += 4;
+    memcpy(cursor, arguments[index], argument_lens[index]);
+    cursor += argument_lens[index];
+  }
 
-EM_ASYNC_JS(int, picorb_worker_d1_bridge,
-            (const char *binding_ptr, int binding_len, const char *request_ptr,
-             int request_len, uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr), {
-  const frame = await Module["picorbWorkerD1Bridge"](
-    UTF8ToString(binding_ptr, binding_len),
-    UTF8ToString(request_ptr, request_len),
-  );
-  if (!(frame instanceof Uint8Array)) return -1;
-  const frameLen = frame.byteLength;
-  const framePtr = frameLen > 0 ? Module._malloc(frameLen) : 0;
-  if (frameLen > 0 && framePtr === 0) return -2;
-  if (frameLen > 0) HEAPU8.set(frame, framePtr);
-  HEAPU32[frame_ptr_ptr >>> 2] = framePtr;
-  HEAPU32[frame_len_ptr >>> 2] = frameLen;
-  return 0;
-});
+  int status = picorb_worker_host_call_bridge(request, (int)request_len,
+                                               frame_ptr_ptr, frame_len_ptr);
+  free(request);
+  return status;
+}
 
-EM_ASYNC_JS(int, picorb_worker_fetch_bridge,
-            (const char *url_ptr, int url_len, const char *options_ptr, int options_len,
-             uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr), {
-  const frame = await Module["picorbWorkerFetchBridge"](
-    UTF8ToString(url_ptr, url_len),
-    UTF8ToString(options_ptr, options_len),
-  );
-  if (!(frame instanceof Uint8Array)) return -1;
-  const frameLen = frame.byteLength;
-  const framePtr = frameLen > 0 ? Module._malloc(frameLen) : 0;
-  if (frameLen > 0 && framePtr === 0) return -2;
-  if (frameLen > 0) HEAPU8.set(frame, framePtr);
-  HEAPU32[frame_ptr_ptr >>> 2] = framePtr;
-  HEAPU32[frame_len_ptr >>> 2] = frameLen;
-  return 0;
-});
+static int
+picorb_worker_kv_get_bridge(const char *binding, int binding_len, const char *key,
+                            int key_len, uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr)
+{
+  const uint8_t *arguments[] = { (const uint8_t *)key };
+  const size_t lengths[] = { (size_t)key_len };
+  return picorb_worker_host_call("kv.get", 6, binding, (size_t)binding_len,
+                                 arguments, lengths, 1, frame_ptr_ptr, frame_len_ptr);
+}
+
+static int
+picorb_worker_kv_put_bridge(const char *binding, int binding_len, const char *key,
+                            int key_len, const uint8_t *value, int value_len,
+                            const char *options, int options_len,
+                            uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr)
+{
+  const uint8_t *arguments[] = { (const uint8_t *)key, value, (const uint8_t *)options };
+  const size_t lengths[] = { (size_t)key_len, (size_t)value_len, (size_t)options_len };
+  return picorb_worker_host_call("kv.put", 6, binding, (size_t)binding_len,
+                                 arguments, lengths, 3, frame_ptr_ptr, frame_len_ptr);
+}
+
+static int
+picorb_worker_queue_send_bridge(const char *binding, int binding_len,
+                                const uint8_t *message, int message_len,
+                                uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr)
+{
+  const uint8_t *arguments[] = { message };
+  const size_t lengths[] = { (size_t)message_len };
+  return picorb_worker_host_call("queue.send", 10, binding, (size_t)binding_len,
+                                 arguments, lengths, 1, frame_ptr_ptr, frame_len_ptr);
+}
+
+static int
+picorb_worker_durable_object_get_bridge(const char *binding, int binding_len,
+                                        const char *name, int name_len,
+                                        uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr)
+{
+  const uint8_t *arguments[] = { (const uint8_t *)name };
+  const size_t lengths[] = { (size_t)name_len };
+  return picorb_worker_host_call("durable_object.get", 18, binding, (size_t)binding_len,
+                                 arguments, lengths, 1, frame_ptr_ptr, frame_len_ptr);
+}
+
+static int
+picorb_worker_durable_object_put_bridge(const char *binding, int binding_len,
+                                        const char *name, int name_len,
+                                        const char *json, int json_len,
+                                        uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr)
+{
+  const uint8_t *arguments[] = { (const uint8_t *)name, (const uint8_t *)json };
+  const size_t lengths[] = { (size_t)name_len, (size_t)json_len };
+  return picorb_worker_host_call("durable_object.put", 18, binding, (size_t)binding_len,
+                                 arguments, lengths, 2, frame_ptr_ptr, frame_len_ptr);
+}
+
+static int
+picorb_worker_d1_bridge(const char *binding, int binding_len,
+                        const char *request, int request_len,
+                        uintptr_t frame_ptr_ptr, uintptr_t frame_len_ptr)
+{
+  const uint8_t *arguments[] = { (const uint8_t *)request };
+  const size_t lengths[] = { (size_t)request_len };
+  return picorb_worker_host_call("d1.execute", 10, binding, (size_t)binding_len,
+                                 arguments, lengths, 1, frame_ptr_ptr, frame_len_ptr);
+}
+
+static int
+picorb_worker_fetch_bridge(const char *url, int url_len, const char *options,
+                           int options_len, uintptr_t frame_ptr_ptr,
+                           uintptr_t frame_len_ptr)
+{
+  const uint8_t *arguments[] = { (const uint8_t *)url, (const uint8_t *)options };
+  const size_t lengths[] = { (size_t)url_len, (size_t)options_len };
+  return picorb_worker_host_call("fetch", 5, "", 0, arguments, lengths, 2,
+                                 frame_ptr_ptr, frame_len_ptr);
+}
 
 EM_JS(int, picorb_worker_random_bytes,
       (uint8_t *output_ptr, int output_len), {
@@ -811,6 +848,77 @@ mrb_cloudflare_fetch(mrb_state *mrb, mrb_value self)
 }
 
 static mrb_value
+mrb_cloudflare_host_call(mrb_state *mrb, mrb_value self)
+{
+  (void)self;
+  const char *operation;
+  const char *binding;
+  mrb_int operation_len;
+  mrb_int binding_len;
+  mrb_value argument_values;
+  mrb_get_args(mrb, "ssA", &operation, &operation_len, &binding, &binding_len,
+               &argument_values);
+
+  mrb_int argument_count = RARRAY_LEN(argument_values);
+  if (operation_len <= 0 || operation_len > PICORB_WORKER_MAX_HOST_CALL_OPERATION_SIZE ||
+      binding_len < 0 || binding_len > PICORB_WORKER_MAX_BINDING_NAME_SIZE ||
+      argument_count > PICORB_WORKER_MAX_HOST_CALL_ARGUMENTS) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "invalid Cloudflare host call");
+  }
+
+  const uint8_t *arguments[PICORB_WORKER_MAX_HOST_CALL_ARGUMENTS];
+  size_t argument_lens[PICORB_WORKER_MAX_HOST_CALL_ARGUMENTS];
+  for (mrb_int index = 0; index < argument_count; index++) {
+    mrb_value argument = mrb_ary_ref(mrb, argument_values, index);
+    if (!mrb_string_p(argument)) {
+      mrb_raise(mrb, E_TYPE_ERROR, "Cloudflare host call arguments must be Strings");
+    }
+    mrb_int length = RSTRING_LEN(argument);
+    if (length < 0 || (uint64_t)length > UINT32_MAX) {
+      mrb_raise(mrb, E_ARGUMENT_ERROR, "Cloudflare host call argument is too large");
+    }
+    arguments[index] = (const uint8_t *)RSTRING_PTR(argument);
+    argument_lens[index] = (size_t)length;
+  }
+
+  uintptr_t frame_ptr = 0;
+  uint32_t frame_len = 0;
+  int status = picorb_worker_host_call(
+    operation, (size_t)operation_len, binding, (size_t)binding_len,
+    arguments, argument_lens, (size_t)argument_count,
+    (uintptr_t)&frame_ptr, (uintptr_t)&frame_len
+  );
+  if (status == -3) {
+    mrb_raise(mrb, E_ARGUMENT_ERROR, "Cloudflare host call request is too large or malformed");
+  }
+  if (status < 0) {
+    raise_cloudflare_error(mrb, "ProtocolError", "Cloudflare host call bridge failed");
+  }
+
+  picorb_worker_host_result result;
+  if (!decode_host_result((const uint8_t *)frame_ptr, frame_len, &result)) {
+    free((void *)frame_ptr);
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare host result");
+  }
+  if (result.kind == PICORB_WORKER_HOST_MISSING) {
+    free((void *)frame_ptr);
+    return mrb_nil_value();
+  }
+  if (result.kind >= PICORB_WORKER_HOST_ERROR) {
+    raise_host_result_error(mrb, &result, frame_ptr);
+  }
+  if (result.kind != PICORB_WORKER_HOST_OK ||
+      result.payload_len > PICORB_WORKER_MAX_HOST_RESULT_SIZE) {
+    free((void *)frame_ptr);
+    raise_cloudflare_error(mrb, "ProtocolError", "invalid Cloudflare host result payload");
+  }
+
+  mrb_value value = mrb_str_new(mrb, (const char *)result.payload, result.payload_len);
+  free((void *)frame_ptr);
+  return value;
+}
+
+static mrb_value
 mrb_cloudflare_env_get(mrb_state *mrb, mrb_value self)
 {
   (void)self;
@@ -1250,6 +1358,8 @@ mrb_picoruby_worker_wasm_gem_init(mrb_state *mrb)
   mrb_define_class_under(mrb, cloudflare, "BindingError", cloudflare_error);
   mrb_define_class_under(mrb, cloudflare, "HostError", cloudflare_error);
   mrb_define_class_under(mrb, cloudflare, "ProtocolError", cloudflare_error);
+  mrb_define_module_function(mrb, cloudflare, "__host_call", mrb_cloudflare_host_call,
+                             MRB_ARGS_REQ(3));
   mrb_define_module_function(mrb, cloudflare, "__kv_get", mrb_cloudflare_kv_get, MRB_ARGS_REQ(2));
   mrb_define_module_function(mrb, cloudflare, "__kv_put", mrb_cloudflare_kv_set, MRB_ARGS_REQ(4));
   mrb_define_module_function(mrb, cloudflare, "__queue_send", mrb_cloudflare_queue_send, MRB_ARGS_REQ(2));

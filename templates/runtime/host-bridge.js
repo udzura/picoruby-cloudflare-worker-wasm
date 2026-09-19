@@ -1,6 +1,8 @@
 const RESULT_MAGIC = new Uint8Array([0x50, 0x48, 0x42, 0x31]); // PHB1
+const CALL_MAGIC = new Uint8Array([0x50, 0x48, 0x43, 0x31]); // PHC1
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const strictDecoder = new TextDecoder("utf-8", { fatal: true });
 
 export const HostResultKind = Object.freeze({
   ok: 0,
@@ -51,6 +53,70 @@ function writeU32(bytes, offset, value) {
 
 function readU32(bytes, offset) {
   return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(offset, true);
+}
+
+function appendLengthPrefixed(parts, bytes) {
+  const length = new Uint8Array(4);
+  writeU32(length, 0, bytes.byteLength);
+  parts.push(length, bytes);
+}
+
+export function encodeHostCall(operation, bindingName = "", args = []) {
+  if (typeof operation !== "string" || operation.length === 0) {
+    throw new TypeError("Host call operation must be a non-empty string");
+  }
+  if (typeof bindingName !== "string" || !Array.isArray(args)) {
+    throw new TypeError("Host call binding and arguments are invalid");
+  }
+  const parts = [CALL_MAGIC];
+  appendLengthPrefixed(parts, encoder.encode(operation));
+  appendLengthPrefixed(parts, encoder.encode(bindingName));
+  const count = new Uint8Array(4);
+  writeU32(count, 0, args.length);
+  parts.push(count);
+  for (const arg of args) appendLengthPrefixed(parts, asBytes(arg));
+  const length = parts.reduce((total, part) => total + part.byteLength, 0);
+  const frame = new Uint8Array(length);
+  let offset = 0;
+  for (const part of parts) {
+    frame.set(part, offset);
+    offset += part.byteLength;
+  }
+  return frame;
+}
+
+export function decodeHostCall(frame) {
+  const bytes = asBytes(frame);
+  let offset = 0;
+  const readBytes = (length) => {
+    if (!Number.isSafeInteger(length) || length < 0 || offset + length > bytes.byteLength) {
+      throw new HostProtocolError("Truncated PicoRuby host call");
+    }
+    const value = bytes.subarray(offset, offset + length);
+    offset += length;
+    return value;
+  };
+  const readLengthPrefixed = () => readBytes(readU32(readBytes(4), 0));
+
+  const magic = readBytes(CALL_MAGIC.byteLength);
+  if (magic.some((value, index) => value !== CALL_MAGIC[index])) {
+    throw new HostProtocolError("Unsupported PicoRuby host call");
+  }
+  let operation;
+  let bindingName;
+  try {
+    operation = strictDecoder.decode(readLengthPrefixed());
+    bindingName = strictDecoder.decode(readLengthPrefixed());
+  } catch {
+    throw new HostProtocolError("PicoRuby host call metadata must be valid UTF-8");
+  }
+  if (operation.length === 0) throw new HostProtocolError("PicoRuby host call operation is empty");
+  const argumentCount = readU32(readBytes(4), 0);
+  if (argumentCount > 16) throw new HostProtocolError("PicoRuby host call has too many arguments");
+  const args = [];
+  for (let index = 0; index < argumentCount; index++) args.push(readLengthPrefixed().slice());
+  if (offset !== bytes.byteLength) throw new HostProtocolError("PicoRuby host call has trailing bytes");
+  return { operation, bindingName, args };
 }
 
 export function encodeHostResult(kind, payload = new Uint8Array()) {
