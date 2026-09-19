@@ -214,7 +214,7 @@ export function createCloudflareD1Bindings(env, bindingTypes = {}) {
         const database = getD1Database(env, types, bindingName);
         const request = parseD1Request(requestJson);
         const result = await executeD1Request(database, request);
-        validateD1JsonValue(result);
+        validateJsonValue(result, "Cloudflare D1");
         return hostOk(utf8(JSON.stringify(result)));
       });
     },
@@ -333,27 +333,64 @@ async function executeD1Request(database, request) {
     : await statement.raw();
 }
 
-function validateD1JsonValue(value, ancestors = new Set()) {
+function validateJsonValue(value, label, ancestors = new Set()) {
   if (value === null || typeof value === "string" || typeof value === "boolean") return;
   if (typeof value === "number") {
     if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
-      throw new HostProtocolError("Cloudflare D1 returned a number outside the supported JSON range");
+      throw new HostProtocolError(`${label} returned a number outside the supported JSON range`);
     }
     return;
   }
   if (!value || typeof value !== "object") {
-    throw new HostProtocolError("Cloudflare D1 returned a non-JSON value");
+    throw new HostProtocolError(`${label} returned a non-JSON value`);
+  }
+  if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype) {
+    throw new HostProtocolError(`${label} returned a non-JSON object`);
   }
   if (ancestors.has(value)) {
-    throw new HostProtocolError("Cloudflare D1 returned a circular value");
+    throw new HostProtocolError(`${label} returned a circular value`);
   }
   ancestors.add(value);
   if (Array.isArray(value)) {
-    value.forEach(item => validateD1JsonValue(item, ancestors));
+    value.forEach(item => validateJsonValue(item, label, ancestors));
   } else {
-    for (const item of Object.values(value)) validateD1JsonValue(item, ancestors);
+    for (const item of Object.values(value)) validateJsonValue(item, label, ancestors);
   }
   ancestors.delete(value);
+}
+
+async function executeAiRun(env, bindingTypes, bindingName, model, inputJson) {
+  return await captureHostCall(async () => {
+    if (typeof bindingName !== "string" || bindingName.length === 0) {
+      throw new HostArgumentError("Cloudflare AI binding name must be a non-empty string");
+    }
+    if (typeof model !== "string" || model.length === 0 || model.includes("\0")) {
+      throw new HostArgumentError("Cloudflare AI model must be a non-empty string without NUL bytes");
+    }
+    requireBindingType(bindingTypes, bindingName, "ai");
+    const ai = env[bindingName];
+    if (!ai || typeof ai.run !== "function") {
+      throw new HostBindingError(`Cloudflare AI binding ${bindingName} is not configured`);
+    }
+
+    let input;
+    try {
+      input = JSON.parse(inputJson);
+    } catch {
+      throw new HostProtocolError("Cloudflare AI input contains invalid JSON");
+    }
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      throw new HostArgumentError("Cloudflare AI input must be a JSON object");
+    }
+    if (input.stream === true) {
+      throw new HostArgumentError("Cloudflare AI streaming is not supported");
+    }
+    validateJsonValue(input, "Cloudflare AI input");
+
+    const result = await ai.run(model, input);
+    validateJsonValue(result, "Cloudflare AI");
+    return hostOk(utf8(JSON.stringify(result)));
+  });
 }
 
 function decodeQueueMessage(message) {
@@ -401,6 +438,7 @@ function isResourceBinding(value) {
     typeof value.get === "function" ||
     typeof value.put === "function" ||
     typeof value.send === "function" ||
+    typeof value.run === "function" ||
     typeof value.prepare === "function" ||
     typeof value.fetch === "function" ||
     typeof value.getByName === "function"
@@ -551,6 +589,9 @@ export function createCloudflareBindings(env, bindingTypes) {
     "d1.execute": ([request], bindingName) => operationBindings.picorbWorkerD1Bridge(
       bindingName, decodeHostCallText(request),
     ),
+    "ai.run": ([model, input], bindingName) => executeAiRun(
+      env, types, bindingName, decodeHostCallText(model), decodeHostCallText(input),
+    ),
     "fetch": ([url, options], bindingName) => {
       if (bindingName !== "") return protocolErrorFrame("Cloudflare fetch does not use a binding");
       return operationBindings.picorbWorkerFetchBridge(
@@ -565,6 +606,7 @@ export function createCloudflareBindings(env, bindingTypes) {
     "durable_object.get": 1,
     "durable_object.put": 2,
     "d1.execute": 1,
+    "ai.run": 2,
     "fetch": 2,
   };
   return mergeBindings(
@@ -613,7 +655,8 @@ function normalizeBindingTypes(bindingTypes) {
     if (typeof name !== "string" || name.length === 0) {
       throw new TypeError("Cloudflare binding type contains an invalid name");
     }
-    if (type !== "kv" && type !== "queue" && type !== "durable_object" && type !== "d1") {
+    if (type !== "kv" && type !== "queue" && type !== "durable_object" &&
+        type !== "d1" && type !== "ai") {
       throw new TypeError(`Unsupported Cloudflare binding type for ${name}: ${type}`);
     }
     normalized[name] = type;

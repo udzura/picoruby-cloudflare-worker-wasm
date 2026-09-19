@@ -583,6 +583,8 @@ module Cloudflare
           value = DurableObject.__build(binding_name)
         elsif type == "d1"
           value = D1.__build(binding_name)
+        elsif type == "ai"
+          value = AI.__build(binding_name)
         else
           present, value = Cloudflare.__env_lookup(binding_name)
           return MISSING unless present
@@ -897,6 +899,30 @@ module Cloudflare
       JSON.parse(json)
     rescue JSON::JSONError => error
       raise ProtocolError, "invalid Cloudflare D1 JSON: #{error.message}"
+    end
+  end
+
+  class AI < Binding
+    def run(model, input = {})
+      unless model.is_a?(String) && !model.empty? && !model.include?("\0")
+        raise ArgumentError, "Cloudflare AI model must be a non-empty String without NUL bytes"
+      end
+      raise ArgumentError, "Cloudflare AI input must be a Hash" unless input.is_a?(Hash)
+      if input["stream"] == true || input[:stream] == true
+        raise ArgumentError, "Cloudflare AI streaming is not supported"
+      end
+
+      begin
+        input_json = JSON.generate(input)
+      rescue JSON::JSONError => error
+        raise ArgumentError, "invalid Cloudflare AI input: #{error.message}"
+      end
+      response = Cloudflare.__host_call("ai.run", @binding_name, [model, input_json])
+      begin
+        JSON.parse(response)
+      rescue JSON::JSONError => error
+        raise ProtocolError, "invalid Cloudflare AI response JSON: #{error.message}"
+      end
     end
   end
 

@@ -8,6 +8,7 @@ cloudflare = request.env["cloudflare.env"]
 cache = cloudflare.CACHE_KV       # Cloudflare::KV
 events = cloudflare.EVENTS_QUEUE  # Cloudflare::Queue
 database = cloudflare.DB          # Cloudflare::D1
+ai = cloudflare.AI                # Cloudflare::AI
 api_url = cloudflare.API_URL      # String
 same_cache = cloudflare["CACHE_KV"]
 ```

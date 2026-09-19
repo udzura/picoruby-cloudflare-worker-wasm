@@ -11,6 +11,7 @@ const source = `{
   "queues": { "producers": [{ "binding": "EVENTS_QUEUE", "queue": "events" }] },
   "durable_objects": { "bindings": [{ "name": "OBJECTS", "class_name": "PicoRubyDurableObject" }] },
   "d1_databases": [{ "binding": "DB", "database_name": "test", "database_id": "test" }],
+  "ai": { "binding": "AI" },
   "vars": { "IGNORED_SCALAR": "value" },
   "env": {
     "staging": {
@@ -20,6 +21,7 @@ const source = `{
 }`;
 
 assert.deepEqual(parseCloudflareBindingTypes(source), [
+  ["AI", "ai"],
   ["CACHE_KV", "kv"],
   ["DB", "d1"],
   ["EVENTS_QUEUE", "queue"],
@@ -31,5 +33,6 @@ assert.throws(
   () => parseCloudflareBindingTypes('{"kv_namespaces":[{"binding":"SAME"}],"queues":{"producers":[{"binding":"SAME"}]}}'),
   /Duplicate Cloudflare binding name: SAME/,
 );
+assert.throws(() => parseCloudflareBindingTypes('{"ai":[]}'), /ai must be an object/);
 
 console.log("Cloudflare binding registry tests passed");

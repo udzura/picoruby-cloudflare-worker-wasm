@@ -247,6 +247,23 @@ class BindingsApp
       direct = env["cloudflare.env"].DB
       explicit = Cloudflare::D1.from_env(env, "DB")
       [200, { "content-type" => "text/plain" }, [direct.equal?(explicit) ? "same" : "different"]]
+    when "/ai/run"
+      result = env["cloudflare.env"].AI.run(
+        "@cf/test/model", { "prompt" => "Hello", "temperature" => 0.25 }
+      )
+      [200, { "content-type" => "text/plain" }, [[
+        result["response"], result["usage"]["total_tokens"],
+      ].inspect]]
+    when "/ai/from-env-alias"
+      direct = env["cloudflare.env"].AI
+      explicit = Cloudflare::AI.from_env(env, "AI")
+      [200, { "content-type" => "text/plain" }, [direct.equal?(explicit) ? "same" : "different"]]
+    when "/ai/stream"
+      begin
+        env["cloudflare.env"].AI.run("@cf/test/model", { "stream" => true })
+      rescue ArgumentError => error
+        [200, { "content-type" => "text/plain" }, ["argument-error=#{error.message}"]]
+      end
     when "/binding/type-error"
       begin
         Cloudflare::KV.from_env(env, "QUEUE_FOO")

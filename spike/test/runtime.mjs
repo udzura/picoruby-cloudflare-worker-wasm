@@ -431,6 +431,7 @@ const namedKvStore = new Map();
 const namedKvOptions = new Map();
 const durableObjectStore = new Map();
 const runtimeD1Calls = [];
+const runtimeAiCalls = [];
 const runtimeQueueMessages = [];
 const serializedDispatchEvents = [];
 let releaseFirstSerializedDispatch;
@@ -535,6 +536,12 @@ const runtimeWorkerEnv = {
       return await Promise.all(statements.map(statement => statement.run()));
     },
   },
+  AI: {
+    async run(model, input) {
+      runtimeAiCalls.push([model, input]);
+      return { response: `answer:${input.prompt}`, usage: { total_tokens: 7 } };
+    },
+  },
 };
 const runtimeWarnings = [];
 const originalConsoleError = console.error;
@@ -552,6 +559,7 @@ try {
       BROKEN_KV: "kv",
       OBJECTS: "durable_object",
       DB: "d1",
+      AI: "ai",
     }),
   );
 } finally {
@@ -825,6 +833,24 @@ const d1AliasResponse = await dispatch(
   new Request("https://example.com/d1/from-env-alias"),
 );
 assert.equal(await d1AliasResponse.text(), "same");
+
+const aiRunResponse = await dispatch(bindingsRuntime, new Request("https://example.com/ai/run"));
+assert.equal(await aiRunResponse.text(), '["answer:Hello", 7]');
+assert.deepEqual(runtimeAiCalls, [[
+  "@cf/test/model", { prompt: "Hello", temperature: 0.25 },
+]]);
+
+const aiAliasResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/ai/from-env-alias"),
+);
+assert.equal(await aiAliasResponse.text(), "same");
+
+const aiStreamResponse = await dispatch(bindingsRuntime, new Request("https://example.com/ai/stream"));
+assert.equal(
+  await aiStreamResponse.text(),
+  "argument-error=Cloudflare AI streaming is not supported",
+);
 
 const typeErrorResponse = await dispatch(
   bindingsRuntime,
