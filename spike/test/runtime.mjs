@@ -432,6 +432,7 @@ const namedKvOptions = new Map();
 const durableObjectStore = new Map();
 const runtimeD1Calls = [];
 const runtimeAiCalls = [];
+const runtimeVectorizeCalls = [];
 const runtimeQueueMessages = [];
 const serializedDispatchEvents = [];
 let releaseFirstSerializedDispatch;
@@ -542,6 +543,36 @@ const runtimeWorkerEnv = {
       return { response: `answer:${input.prompt}`, usage: { total_tokens: 7 } };
     },
   },
+  VECTOR_INDEX: {
+    async query(vector, options) {
+      runtimeVectorizeCalls.push(["query", vector, options]);
+      return { count: 1, matches: [{ id: "one", score: 0.9, values: vector, metadata: { kind: "post" } }] };
+    },
+    async queryById(id, options) {
+      runtimeVectorizeCalls.push(["queryById", id, options]);
+      return { count: 1, matches: [{ id: `${id}-match`, score: 0.8 }] };
+    },
+    async insert(vectors) {
+      runtimeVectorizeCalls.push(["insert", vectors]);
+      return { count: vectors.length, ids: vectors.map(vector => vector.id) };
+    },
+    async upsert(vectors) {
+      runtimeVectorizeCalls.push(["upsert", vectors]);
+      return { count: vectors.length, ids: vectors.map(vector => vector.id) };
+    },
+    async getByIds(ids) {
+      runtimeVectorizeCalls.push(["getByIds", ids]);
+      return ids.map(id => ({ id, values: [0.1, 0.2] }));
+    },
+    async deleteByIds(ids) {
+      runtimeVectorizeCalls.push(["deleteByIds", ids]);
+      return { count: ids.length, ids };
+    },
+    async describe() {
+      runtimeVectorizeCalls.push(["describe"]);
+      return { dimensions: 2, vectorCount: 1 };
+    },
+  },
 };
 const runtimeWarnings = [];
 const originalConsoleError = console.error;
@@ -560,6 +591,7 @@ try {
       OBJECTS: "durable_object",
       DB: "d1",
       AI: "ai",
+      VECTOR_INDEX: "vectorize",
     }),
   );
 } finally {
@@ -850,6 +882,47 @@ const aiStreamResponse = await dispatch(bindingsRuntime, new Request("https://ex
 assert.equal(
   await aiStreamResponse.text(),
   "argument-error=Cloudflare AI streaming is not supported",
+);
+
+const vectorizeQueryResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/vectorize/query"),
+);
+assert.equal(await vectorizeQueryResponse.text(), '[1, "one", 0.9, "post"]');
+assert.deepEqual(runtimeVectorizeCalls[0], [
+  "query", [0.1, 0.2, 0.3], {
+    topK: 2, returnValues: true, returnMetadata: "all", namespace: "docs", filter: { kind: "post" },
+  },
+]);
+
+const vectorizeQueryByIdResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/vectorize/query-by-id"),
+);
+assert.equal(await vectorizeQueryByIdResponse.text(), '["seed-match"]');
+
+const vectorizeMutationsResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/vectorize/mutations"),
+);
+assert.equal(await vectorizeMutationsResponse.text(), "[1, 1, \"one\", 1, 2]");
+assert.deepEqual(runtimeVectorizeCalls.slice(2).map(call => call[0]), [
+  "insert", "upsert", "getByIds", "deleteByIds", "describe",
+]);
+
+const vectorizeAliasResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/vectorize/from-env-alias"),
+);
+assert.equal(await vectorizeAliasResponse.text(), "same");
+
+const vectorizeInvalidTopKResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/vectorize/invalid-top-k"),
+);
+assert.equal(
+  await vectorizeInvalidTopKResponse.text(),
+  "argument-error=Cloudflare Vectorize topK must not exceed 50 when returning values or all metadata",
 );
 
 const typeErrorResponse = await dispatch(

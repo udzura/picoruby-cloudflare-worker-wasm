@@ -12,6 +12,7 @@ const source = `{
   "durable_objects": { "bindings": [{ "name": "OBJECTS", "class_name": "PicoRubyDurableObject" }] },
   "d1_databases": [{ "binding": "DB", "database_name": "test", "database_id": "test" }],
   "ai": { "binding": "AI" },
+  "vectorize": [{ "binding": "VECTOR_INDEX", "index_name": "test" }],
   "vars": { "IGNORED_SCALAR": "value" },
   "env": {
     "staging": {
@@ -26,6 +27,7 @@ assert.deepEqual(parseCloudflareBindingTypes(source), [
   ["DB", "d1"],
   ["EVENTS_QUEUE", "queue"],
   ["OBJECTS", "durable_object"],
+  ["VECTOR_INDEX", "vectorize"],
 ]);
 assert.deepEqual(parseCloudflareBindingTypes(source, "staging"), [["STAGING_KV", "kv"]]);
 assert.match(renderCloudflareBindingTypes([["CACHE_KV", "kv"]], "wrangler.jsonc"), /\["CACHE_KV", "kv"\]/);

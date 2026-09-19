@@ -585,6 +585,8 @@ module Cloudflare
           value = D1.__build(binding_name)
         elsif type == "ai"
           value = AI.__build(binding_name)
+        elsif type == "vectorize"
+          value = Vectorize.__build(binding_name)
         else
           present, value = Cloudflare.__env_lookup(binding_name)
           return MISSING unless present
@@ -922,6 +924,66 @@ module Cloudflare
         JSON.parse(response)
       rescue JSON::JSONError => error
         raise ProtocolError, "invalid Cloudflare AI response JSON: #{error.message}"
+      end
+    end
+  end
+
+  class Vectorize < Binding
+    def query(vector, top_k: 5, return_values: false, return_metadata: :none, namespace: nil, filter: nil)
+      __request("query", "vector" => vector,
+        "options" => __query_options(top_k, return_values, return_metadata, namespace, filter))
+    end
+
+    def query_by_id(id, top_k: 5, return_values: false, return_metadata: :none, namespace: nil, filter: nil)
+      __request("query_by_id", "id" => id,
+        "options" => __query_options(top_k, return_values, return_metadata, namespace, filter))
+    end
+
+    def insert(vectors)
+      __request("insert", "vectors" => vectors)
+    end
+
+    def upsert(vectors)
+      __request("upsert", "vectors" => vectors)
+    end
+
+    def get_by_ids(ids)
+      __request("get_by_ids", "ids" => ids)
+    end
+
+    def delete_by_ids(ids)
+      __request("delete_by_ids", "ids" => ids)
+    end
+
+    def describe
+      __request("describe")
+    end
+
+    private
+
+    def __query_options(top_k, return_values, return_metadata, namespace, filter)
+      metadata = return_metadata.to_s
+      options = {
+        "topK" => top_k,
+        "returnValues" => return_values,
+        "returnMetadata" => metadata,
+      }
+      options["namespace"] = namespace unless namespace.nil?
+      options["filter"] = filter unless filter.nil?
+      options
+    end
+
+    def __request(operation, request = {})
+      begin
+        request_json = JSON.generate(request)
+      rescue JSON::JSONError => error
+        raise ArgumentError, "invalid Cloudflare Vectorize request: #{error.message}"
+      end
+      response = Cloudflare.__host_call("vectorize.#{operation}", @binding_name, [request_json])
+      begin
+        JSON.parse(response)
+      rescue JSON::JSONError => error
+        raise ProtocolError, "invalid Cloudflare Vectorize response JSON: #{error.message}"
       end
     end
   end

@@ -9,6 +9,7 @@ cache = cloudflare.CACHE_KV       # Cloudflare::KV
 events = cloudflare.EVENTS_QUEUE  # Cloudflare::Queue
 database = cloudflare.DB          # Cloudflare::D1
 ai = cloudflare.AI                # Cloudflare::AI
+vectors = cloudflare.VECTOR_INDEX # Cloudflare::Vectorize
 api_url = cloudflare.API_URL      # String
 same_cache = cloudflare["CACHE_KV"]
 ```
@@ -30,7 +31,7 @@ Inspecting the proxy, including as part of the complete Rack environment,
 never displays resolved values. This prevents variables and secrets from being
 included accidentally in diagnostics through `Cloudflare::Environment#inspect`.
 
-KV, Queue, Durable Object, and D1 resources are identified by the generated binding-type registry,
+KV, Queue, Durable Object, D1, AI, and Vectorize resources are identified by the generated binding-type registry,
 whose source is `wrangler.jsonc`. The runtime does not infer types from object
 methods, so unsupported resources cannot be mistaken for KV. Text and secret
 values are returned as Strings. JSON objects, arrays, booleans, numbers, and

@@ -6,6 +6,7 @@ const RESOURCE_BINDINGS = [
   { section: "durable_objects", subsection: "bindings", nameField: "name", type: "durable_object", singleton: false },
   { section: "d1_databases", subsection: null, nameField: "binding", type: "d1", singleton: false },
   { section: "ai", subsection: null, nameField: "binding", type: "ai", singleton: true },
+  { section: "vectorize", subsection: null, nameField: "binding", type: "vectorize", singleton: false },
 ];
 
 export function parseCloudflareBindingTypes(source, environment = null) {

@@ -264,6 +264,39 @@ class BindingsApp
       rescue ArgumentError => error
         [200, { "content-type" => "text/plain" }, ["argument-error=#{error.message}"]]
       end
+    when "/vectorize/query"
+      result = env["cloudflare.env"].VECTOR_INDEX.query(
+        [0.1, 0.2, 0.3], top_k: 2, return_values: true,
+        return_metadata: :all, namespace: "docs", filter: { "kind" => "post" }
+      )
+      match = result["matches"][0]
+      [200, { "content-type" => "text/plain" }, [[
+        result["count"], match["id"], match["score"], match["metadata"]["kind"],
+      ].inspect]]
+    when "/vectorize/query-by-id"
+      result = env["cloudflare.env"].VECTOR_INDEX.query_by_id("seed", top_k: 1)
+      [200, { "content-type" => "text/plain" }, [[result["matches"][0]["id"]].inspect]]
+    when "/vectorize/mutations"
+      index = env["cloudflare.env"].VECTOR_INDEX
+      vector = { "id" => "one", "values" => [0.1, 0.2], "metadata" => { "kind" => "post" } }
+      results = [
+        index.insert([vector]), index.upsert([vector]),
+        index.get_by_ids(["one"]), index.delete_by_ids(["one"]), index.describe,
+      ]
+      [200, { "content-type" => "text/plain" }, [[
+        results[0]["count"], results[1]["count"], results[2][0]["id"],
+        results[3]["count"], results[4]["dimensions"],
+      ].inspect]]
+    when "/vectorize/from-env-alias"
+      direct = env["cloudflare.env"].VECTOR_INDEX
+      explicit = Cloudflare::Vectorize.from_env(env, "VECTOR_INDEX")
+      [200, { "content-type" => "text/plain" }, [direct.equal?(explicit) ? "same" : "different"]]
+    when "/vectorize/invalid-top-k"
+      begin
+        env["cloudflare.env"].VECTOR_INDEX.query([0.1], top_k: 51, return_values: true)
+      rescue ArgumentError => error
+        [200, { "content-type" => "text/plain" }, ["argument-error=#{error.message}"]]
+      end
     when "/binding/type-error"
       begin
         Cloudflare::KV.from_env(env, "QUEUE_FOO")

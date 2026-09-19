@@ -21,8 +21,11 @@ call frame. Arguments are byte strings so binary KV values do not need Base64
 encoding. Each allowlisted operation defines which arguments are UTF-8, JSON,
 or raw bytes and applies its own size and value validation.
 
-The initial operation names are `kv.get`, `kv.put`, `queue.send`,
-`durable_object.get`, `durable_object.put`, `d1.execute`, and `fetch`.
+The operation names are `kv.get`, `kv.put`, `queue.send`,
+`durable_object.get`, `durable_object.put`, `d1.execute`, `ai.run`,
+`vectorize.query`, `vectorize.query_by_id`, `vectorize.insert`,
+`vectorize.upsert`, `vectorize.get_by_ids`, `vectorize.delete_by_ids`,
+`vectorize.describe`, and `fetch`.
 Unknown operations, invalid arity, malformed framing, and invalid text produce
 a `PHB1` protocol-error result.
 

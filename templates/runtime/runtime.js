@@ -393,6 +393,141 @@ async function executeAiRun(env, bindingTypes, bindingName, model, inputJson) {
   });
 }
 
+function parseVectorizeJson(json) {
+  let value;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    throw new HostProtocolError("Cloudflare Vectorize request contains invalid JSON");
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new HostArgumentError("Cloudflare Vectorize request must be a JSON object");
+  }
+  return value;
+}
+
+function getVectorizeIndex(env, bindingTypes, bindingName) {
+  if (typeof bindingName !== "string" || bindingName.length === 0) {
+    throw new HostArgumentError("Cloudflare Vectorize binding name must be a non-empty string");
+  }
+  requireBindingType(bindingTypes, bindingName, "vectorize");
+  const index = env[bindingName];
+  if (!index || typeof index.query !== "function") {
+    throw new HostBindingError(`Cloudflare Vectorize binding ${bindingName} is not configured`);
+  }
+  return index;
+}
+
+function validateVector(values, label) {
+  if (!Array.isArray(values) || values.length === 0 ||
+      values.some(value => typeof value !== "number" || !Number.isFinite(value))) {
+    throw new HostArgumentError(`${label} must be a non-empty Array of finite numbers`);
+  }
+}
+
+function validateVectorizeOptions(options) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new HostArgumentError("Cloudflare Vectorize query options must be a JSON object");
+  }
+  const allowed = new Set(["topK", "returnValues", "returnMetadata", "namespace", "filter"]);
+  for (const key of Object.keys(options)) {
+    if (!allowed.has(key)) throw new HostArgumentError(`Unknown Cloudflare Vectorize query option: ${key}`);
+  }
+  if (!Number.isInteger(options.topK) || options.topK < 1 || options.topK > 100) {
+    throw new HostArgumentError("Cloudflare Vectorize topK must be an Integer between 1 and 100");
+  }
+  if (typeof options.returnValues !== "boolean") {
+    throw new HostArgumentError("Cloudflare Vectorize returnValues must be boolean");
+  }
+  if (!["none", "indexed", "all"].includes(options.returnMetadata)) {
+    throw new HostArgumentError("Cloudflare Vectorize returnMetadata must be none, indexed, or all");
+  }
+  if ((options.returnValues || options.returnMetadata === "all") && options.topK > 50) {
+    throw new HostArgumentError("Cloudflare Vectorize topK must not exceed 50 when returning values or all metadata");
+  }
+  if (options.namespace !== undefined &&
+      (typeof options.namespace !== "string" || options.namespace.length === 0)) {
+    throw new HostArgumentError("Cloudflare Vectorize namespace must be a non-empty string");
+  }
+  if (options.filter !== undefined &&
+      (!options.filter || typeof options.filter !== "object" || Array.isArray(options.filter))) {
+    throw new HostArgumentError("Cloudflare Vectorize filter must be a JSON object");
+  }
+  validateJsonValue(options, "Cloudflare Vectorize query options");
+}
+
+function validateVectorizeIds(ids) {
+  if (!Array.isArray(ids) || ids.length === 0 ||
+      ids.some(id => typeof id !== "string" || id.length === 0)) {
+    throw new HostArgumentError("Cloudflare Vectorize ids must be a non-empty Array of non-empty strings");
+  }
+}
+
+function validateVectorizeVectors(vectors) {
+  if (!Array.isArray(vectors) || vectors.length === 0) {
+    throw new HostArgumentError("Cloudflare Vectorize vectors must be a non-empty Array");
+  }
+  for (const vector of vectors) {
+    if (!vector || typeof vector !== "object" || Array.isArray(vector) ||
+        typeof vector.id !== "string" || vector.id.length === 0) {
+      throw new HostArgumentError("Each Cloudflare Vectorize vector must have a non-empty string id");
+    }
+    validateVector(vector.values, "Cloudflare Vectorize vector values");
+    if (vector.namespace !== undefined &&
+        (typeof vector.namespace !== "string" || vector.namespace.length === 0)) {
+      throw new HostArgumentError("Cloudflare Vectorize vector namespace must be a non-empty string");
+    }
+    if (vector.metadata !== undefined &&
+        (!vector.metadata || typeof vector.metadata !== "object" || Array.isArray(vector.metadata))) {
+      throw new HostArgumentError("Cloudflare Vectorize vector metadata must be a JSON object");
+    }
+    validateJsonValue(vector, "Cloudflare Vectorize vector");
+  }
+}
+
+async function executeVectorize(env, bindingTypes, bindingName, operation, requestJson) {
+  return await captureHostCall(async () => {
+    const index = getVectorizeIndex(env, bindingTypes, bindingName);
+    const request = parseVectorizeJson(requestJson);
+    let result;
+    if (operation === "query" || operation === "query_by_id") {
+      validateVectorizeOptions(request.options);
+      if (operation === "query") {
+        validateVector(request.vector, "Cloudflare Vectorize query vector");
+        result = await index.query(request.vector, request.options);
+      } else {
+        if (typeof request.id !== "string" || request.id.length === 0) {
+          throw new HostArgumentError("Cloudflare Vectorize id must be a non-empty string");
+        }
+        if (typeof index.queryById !== "function") {
+          throw new HostBindingError(`Cloudflare Vectorize binding ${bindingName} does not support queryById`);
+        }
+        result = await index.queryById(request.id, request.options);
+      }
+    } else if (operation === "insert" || operation === "upsert") {
+      validateVectorizeVectors(request.vectors);
+      if (typeof index[operation] !== "function") {
+        throw new HostBindingError(`Cloudflare Vectorize binding ${bindingName} does not support ${operation}`);
+      }
+      result = await index[operation](request.vectors);
+    } else if (operation === "get_by_ids" || operation === "delete_by_ids") {
+      validateVectorizeIds(request.ids);
+      const method = operation === "get_by_ids" ? "getByIds" : "deleteByIds";
+      if (typeof index[method] !== "function") {
+        throw new HostBindingError(`Cloudflare Vectorize binding ${bindingName} does not support ${method}`);
+      }
+      result = await index[method](request.ids);
+    } else {
+      if (typeof index.describe !== "function") {
+        throw new HostBindingError(`Cloudflare Vectorize binding ${bindingName} does not support describe`);
+      }
+      result = await index.describe();
+    }
+    validateJsonValue(result, "Cloudflare Vectorize");
+    return hostOk(utf8(JSON.stringify(result)));
+  });
+}
+
 function decodeQueueMessage(message) {
   try {
     return strictDecoder.decode(message);
@@ -439,6 +574,7 @@ function isResourceBinding(value) {
     typeof value.put === "function" ||
     typeof value.send === "function" ||
     typeof value.run === "function" ||
+    typeof value.query === "function" ||
     typeof value.prepare === "function" ||
     typeof value.fetch === "function" ||
     typeof value.getByName === "function"
@@ -592,6 +728,27 @@ export function createCloudflareBindings(env, bindingTypes) {
     "ai.run": ([model, input], bindingName) => executeAiRun(
       env, types, bindingName, decodeHostCallText(model), decodeHostCallText(input),
     ),
+    "vectorize.query": ([request], bindingName) => executeVectorize(
+      env, types, bindingName, "query", decodeHostCallText(request),
+    ),
+    "vectorize.query_by_id": ([request], bindingName) => executeVectorize(
+      env, types, bindingName, "query_by_id", decodeHostCallText(request),
+    ),
+    "vectorize.insert": ([request], bindingName) => executeVectorize(
+      env, types, bindingName, "insert", decodeHostCallText(request),
+    ),
+    "vectorize.upsert": ([request], bindingName) => executeVectorize(
+      env, types, bindingName, "upsert", decodeHostCallText(request),
+    ),
+    "vectorize.get_by_ids": ([request], bindingName) => executeVectorize(
+      env, types, bindingName, "get_by_ids", decodeHostCallText(request),
+    ),
+    "vectorize.delete_by_ids": ([request], bindingName) => executeVectorize(
+      env, types, bindingName, "delete_by_ids", decodeHostCallText(request),
+    ),
+    "vectorize.describe": ([request], bindingName) => executeVectorize(
+      env, types, bindingName, "describe", decodeHostCallText(request),
+    ),
     "fetch": ([url, options], bindingName) => {
       if (bindingName !== "") return protocolErrorFrame("Cloudflare fetch does not use a binding");
       return operationBindings.picorbWorkerFetchBridge(
@@ -607,6 +764,13 @@ export function createCloudflareBindings(env, bindingTypes) {
     "durable_object.put": 2,
     "d1.execute": 1,
     "ai.run": 2,
+    "vectorize.query": 1,
+    "vectorize.query_by_id": 1,
+    "vectorize.insert": 1,
+    "vectorize.upsert": 1,
+    "vectorize.get_by_ids": 1,
+    "vectorize.delete_by_ids": 1,
+    "vectorize.describe": 1,
     "fetch": 2,
   };
   return mergeBindings(
@@ -656,7 +820,7 @@ function normalizeBindingTypes(bindingTypes) {
       throw new TypeError("Cloudflare binding type contains an invalid name");
     }
     if (type !== "kv" && type !== "queue" && type !== "durable_object" &&
-        type !== "d1" && type !== "ai") {
+        type !== "d1" && type !== "ai" && type !== "vectorize") {
       throw new TypeError(`Unsupported Cloudflare binding type for ${name}: ${type}`);
     }
     normalized[name] = type;
