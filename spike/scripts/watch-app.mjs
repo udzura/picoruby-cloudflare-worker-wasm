@@ -61,7 +61,11 @@ function scheduleBuild() {
 }
 
 function startWrangler() {
-  worker = spawn(npm, ["exec", "--", "wrangler", "dev"], {
+  const args = ["exec", "--", "wrangler", "dev"];
+  if (process.env.WRANGLER_CONFIG) {
+    args.push("--config", process.env.WRANGLER_CONFIG);
+  }
+  worker = spawn(npm, args, {
     cwd: spikeRoot,
     env: { ...process.env, WRANGLER_LOG_PATH: ".wrangler/wrangler.log" },
     stdio: "inherit",

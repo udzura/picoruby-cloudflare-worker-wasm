@@ -1,0 +1,17 @@
+{
+	"$schema": "../../spike/node_modules/wrangler/config-schema.json",
+	"name": "picoruby-d1-todo",
+	"main": "../../spike/src/index.js",
+	"compatibility_date": "2026-08-22",
+	"assets": {
+		"directory": "./public",
+		"run_worker_first": ["/api/*"]
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "picoruby-worker-todo",
+			"database_id": "00000000-0000-0000-0000-000000000000"
+		}
+	]
+}

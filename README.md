@@ -21,6 +21,8 @@ documented in [docs/web-crypto.md](docs/web-crypto.md).
 
 An encrypted cookie-session example using the latest `mruby-rack` is available
 under [examples/cookie-simple](examples/cookie-simple/README.md).
+A Sinatra Todo application with a generated frontend and D1 persistence is
+available under [examples/d1-todo](examples/d1-todo/README.md).
 
 ## Rack application
 
