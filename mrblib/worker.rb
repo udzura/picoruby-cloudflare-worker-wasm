@@ -905,6 +905,71 @@ module Cloudflare
   end
 
   class AI < Binding
+    class TextGenerationResult
+      attr_reader :raw
+
+      def initialize(raw)
+        unless raw.is_a?(Hash) && raw.key?("response")
+          raise ProtocolError, "Cloudflare AI text generation result must contain a response"
+        end
+        @raw = raw
+      end
+
+      def response
+        @raw["response"]
+      end
+
+      def usage
+        @raw["usage"]
+      end
+    end
+
+    class EmbeddingResult
+      attr_reader :raw, :vectors, :shape
+
+      def initialize(raw)
+        unless raw.is_a?(Hash) && raw["data"].is_a?(Array) &&
+            raw["shape"].is_a?(Array) && raw["shape"].length == 2
+          raise ProtocolError, "Cloudflare AI embedding result must contain data and a two-item shape"
+        end
+        count, dimensions = raw["shape"]
+        unless count.is_a?(Integer) && count >= 0 && dimensions.is_a?(Integer) && dimensions >= 0 &&
+            raw["data"].length == count && raw["data"].all? { |vector|
+              vector.is_a?(Array) && vector.length == dimensions &&
+                vector.all? { |value| value.is_a?(Numeric) }
+            }
+          raise ProtocolError, "Cloudflare AI embedding data does not match its shape"
+        end
+        @raw = raw
+        @vectors = raw["data"]
+        @shape = raw["shape"]
+      end
+
+      def count
+        @shape[0]
+      end
+
+      def dimensions
+        @shape[1]
+      end
+
+      def first
+        @vectors[0]
+      end
+
+      def pooling
+        @raw["pooling"]
+      end
+    end
+
+    def generate(model, input = {})
+      TextGenerationResult.new(run(model, input))
+    end
+
+    def embed(model, input = {})
+      EmbeddingResult.new(run(model, input))
+    end
+
     def run(model, input = {})
       unless model.is_a?(String) && !model.empty? && !model.include?("\0")
         raise ArgumentError, "Cloudflare AI model must be a non-empty String without NUL bytes"

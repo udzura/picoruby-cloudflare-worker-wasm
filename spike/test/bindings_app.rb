@@ -254,6 +254,28 @@ class BindingsApp
       [200, { "content-type" => "text/plain" }, [[
         result["response"], result["usage"]["total_tokens"],
       ].inspect]]
+    when "/ai/generate"
+      result = env["cloudflare.env"].AI.generate(
+        "@cf/test/model", { "prompt" => "Hello" }
+      )
+      [200, { "content-type" => "text/plain" }, [[
+        result.class, result.response, result.usage["total_tokens"],
+        result.raw["response"],
+      ].inspect]]
+    when "/ai/embed"
+      result = env["cloudflare.env"].AI.embed(
+        "@cf/test/embedding", { "text" => ["Ruby", "WebAssembly"] }
+      )
+      [200, { "content-type" => "text/plain" }, [[
+        result.class, result.count, result.dimensions, result.first,
+        result.vectors[1], result.shape, result.pooling, result.raw["shape"],
+      ].inspect]]
+    when "/ai/embed-invalid"
+      begin
+        env["cloudflare.env"].AI.embed("@cf/test/invalid-embedding", { "text" => "Ruby" })
+      rescue Cloudflare::ProtocolError => error
+        [200, { "content-type" => "text/plain" }, ["protocol-error=#{error.message}"]]
+      end
     when "/ai/from-env-alias"
       direct = env["cloudflare.env"].AI
       explicit = Cloudflare::AI.from_env(env, "AI")

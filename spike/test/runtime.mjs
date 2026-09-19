@@ -540,6 +540,12 @@ const runtimeWorkerEnv = {
   AI: {
     async run(model, input) {
       runtimeAiCalls.push([model, input]);
+      if (model === "@cf/test/embedding") {
+        return { data: [[0.1, 0.2], [0.3, 0.4]], shape: [2, 2], pooling: "mean" };
+      }
+      if (model === "@cf/test/invalid-embedding") {
+        return { data: [[0.1]], shape: [1, 2] };
+      }
       return { response: `answer:${input.prompt}`, usage: { total_tokens: 7 } };
     },
   },
@@ -871,6 +877,27 @@ assert.equal(await aiRunResponse.text(), '["answer:Hello", 7]');
 assert.deepEqual(runtimeAiCalls, [[
   "@cf/test/model", { prompt: "Hello", temperature: 0.25 },
 ]]);
+
+const aiGenerateResponse = await dispatch(bindingsRuntime, new Request("https://example.com/ai/generate"));
+assert.equal(
+  await aiGenerateResponse.text(),
+  '[Cloudflare::AI::TextGenerationResult, "answer:Hello", 7, "answer:Hello"]',
+);
+
+const aiEmbedResponse = await dispatch(bindingsRuntime, new Request("https://example.com/ai/embed"));
+assert.equal(
+  await aiEmbedResponse.text(),
+  '[Cloudflare::AI::EmbeddingResult, 2, 2, [0.1, 0.2], [0.3, 0.4], [2, 2], "mean", [2, 2]]',
+);
+
+const aiInvalidEmbeddingResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/ai/embed-invalid"),
+);
+assert.equal(
+  await aiInvalidEmbeddingResponse.text(),
+  "protocol-error=Cloudflare AI embedding data does not match its shape",
+);
 
 const aiAliasResponse = await dispatch(
   bindingsRuntime,
