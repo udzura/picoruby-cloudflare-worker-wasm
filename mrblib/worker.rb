@@ -220,7 +220,8 @@ module PicoRubyWorker
         headers = response[1]
         body = response[2]
         normalized_headers = normalize_headers(status, headers)
-        normalized_body = consume_body(env, status, body)
+        descriptor = env["cloudflare.hijack"]
+        normalized_body = descriptor ? hijack_body(descriptor, body) : consume_body(env, status, body)
         result = [status, normalized_headers, normalized_body]
       rescue => exception
         error = exception
@@ -272,6 +273,7 @@ module PicoRubyWorker
         "rack.errors" => RackErrors.new,
         "rack.response_finished" => [],
         "cloudflare.env" => Cloudflare::Environment.new,
+        "cloudflare.hijack" => nil,
       }
 
       index = 0
@@ -385,8 +387,6 @@ module PicoRubyWorker
     end
 
     def self.consume_body(env, status, body)
-      return body.stream_id if body.is_a?(Cloudflare::HostStreamBody)
-
       raise RackError, "Rack body must respond to each" unless body.respond_to?(:each)
       return "" if env["REQUEST_METHOD"] == "HEAD" || no_entity_status?(status)
 
@@ -406,6 +406,15 @@ module PicoRubyWorker
         end
       end
       content
+    end
+
+    def self.hijack_body(descriptor, body)
+      unless descriptor.is_a?(Cloudflare::StreamDescriptor)
+        raise RackError, "cloudflare.hijack must contain a Cloudflare::StreamDescriptor"
+      end
+      raise RackError, "Rack body must respond to each" unless body.respond_to?(:each)
+
+      descriptor.id
     end
 
     def self.append_body_part(content, part)
@@ -906,19 +915,19 @@ module Cloudflare
     end
   end
 
-  # A pass-through body owned by the JavaScript host, not a Ruby enumerable.
-  class HostStreamBody
-    attr_reader :stream_id
+  # An opaque handle for a ReadableStream owned by the JavaScript host.
+  class StreamDescriptor
+    attr_reader :id
 
-    def initialize(stream_id)
-      unless stream_id.is_a?(Integer) && stream_id > 0 && stream_id <= 0xffffffff
-        raise ArgumentError, "invalid host stream handle"
+    def initialize(id)
+      unless id.is_a?(Integer) && id > 0 && id <= 0xffffffff
+        raise ArgumentError, "invalid stream descriptor"
       end
-      @stream_id = stream_id
+      @id = id
     end
 
-    def each
-      raise ProtocolError, "HostStreamBody cannot be consumed in Ruby"
+    class << self
+      private :new
     end
   end
 
@@ -982,7 +991,7 @@ module Cloudflare
 
     def generate(model, input = {})
       result = run(model, input)
-      return result if result.is_a?(HostStreamBody)
+      return result if result.is_a?(StreamDescriptor)
 
       TextGenerationResult.new(result)
     end
@@ -1003,7 +1012,7 @@ module Cloudflare
         raise ArgumentError, "invalid Cloudflare AI input: #{error.message}"
       end
       response = Cloudflare.__host_call("ai.run", @binding_name, [model, input_json])
-      return response if response.is_a?(HostStreamBody)
+      return response if response.is_a?(StreamDescriptor)
 
       begin
         JSON.parse(response)

@@ -913,7 +913,7 @@ mrb_cloudflare_host_call(mrb_state *mrb, mrb_value self)
     mrb_value handle = mrb_int_value(mrb, read_u32_le(result.payload));
     free((void *)frame_ptr);
     struct RClass *cloudflare = mrb_module_get(mrb, "Cloudflare");
-    return mrb_obj_new(mrb, mrb_class_get_under(mrb, cloudflare, "HostStreamBody"), 1, &handle);
+    return mrb_obj_new(mrb, mrb_class_get_under(mrb, cloudflare, "StreamDescriptor"), 1, &handle);
   }
   if (result.kind >= PICORB_WORKER_HOST_ERROR) {
     raise_host_result_error(mrb, &result, frame_ptr);

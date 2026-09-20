@@ -18,7 +18,7 @@ const bindings = createCloudflareBindings({ AI: { async run() {
 const request = path => new Request(`https://example.test/${path}`);
 // handleRequest has already closed the VM when the first byte arrives.
 const response = await handleRequest(createPicoRuby, wasm, app, request("stream"), bindings);
-assert.equal(response.headers.get("content-type"), "text/event-stream;charset=utf-8");
+assert.equal(response.headers.get("content-type"), "text/event-stream");
 assert.equal(response.headers.get("content-length"), null);
 const reader = response.body.getReader();
 upstreams[0].controller.enqueue(encoder.encode("data: first\n\n"));
@@ -39,7 +39,7 @@ upstreams[2].controller.close();
 assert.equal(await responses[1].text(), "isolated");
 
 const unused = await handleRequest(createPicoRuby, wasm, app, request("unused"), bindings);
-assert.equal(await unused.text(), "unused");
+assert.equal(await unused.text(), "Cloudflare::StreamDescriptor:1");
 assert.ok(upstreams[3].cancelled);
 await assert.rejects(handleRequest(createPicoRuby, wasm, app, request("invalid"), bindings), /header name/);
 assert.ok(upstreams[4].cancelled);
@@ -48,8 +48,15 @@ const head = await handleRequest(createPicoRuby, wasm, app, new Request("https:/
 assert.equal(head.body, null);
 assert.ok(upstreams[5].cancelled);
 
+const overwritten = await handleRequest(createPicoRuby, wasm, app, request("overwrite"), bindings);
+assert.ok(upstreams[6].cancelled, "an unselected stream is discarded");
+upstreams[7].controller.enqueue(encoder.encode("selected"));
+upstreams[7].controller.close();
+assert.equal(await overwritten.text(), "selected");
+
 const invalid = createCloudflareBindings({ AI: { run: async () => ({ response: "not a stream" }) } }, { AI: "ai" });
-// Sinatra turns application exceptions into a 500. No invalid body crosses the ABI.
-const bad = await handleRequest(createPicoRuby, wasm, app, request("stream"), invalid);
-assert.equal(bad.status, 500);
-console.log("stream Wasm/Sinatra: early response, VM close, isolation, cancellation and discarded bodies passed");
+await assert.rejects(
+  handleRequest(createPicoRuby, wasm, app, request("stream"), invalid),
+  /streaming result must be an unlocked ReadableStream/,
+);
+console.log("stream Wasm/Rack: descriptor hijack, early response, isolation, cancellation and discarded streams passed");

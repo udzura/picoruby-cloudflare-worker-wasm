@@ -52,7 +52,7 @@ try {
     })(),
     new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("stream was buffered or stalled")), 15000); }),
   ]);
-  console.log("workerd Wasm/Sinatra: first SSE chunk delivered before upstream completion");
+  console.log("workerd Wasm/Rack: first SSE chunk delivered before upstream completion");
 } finally {
   clearTimeout(timer);
   await mf.dispose();
