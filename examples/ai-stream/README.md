@@ -45,8 +45,10 @@ npm run dev
 
 Wrangler uses `WRANGLER_CONFIG` above. The AI binding calls remote Workers AI,
 requires a logged-in Cloudflare account, and uses its AI quota. The model is
-`@cf/meta/llama-3.1-8b-instruct`; edit `app.rb` to change it. The browser and SSE
-API share the same origin.
+`@cf/meta/llama-3.1-8b-instruct-fp8-fast`; edit `app.rb` to change it. The browser and SSE
+API share the same origin. The AI binding explicitly uses `remote: true`, and
+each response is limited to 512 generated tokens. The watcher forwards
+`WRANGLER_CONFIG` to Wrangler.
 
 Validate the bundle without publishing:
 
@@ -61,7 +63,8 @@ The example has no authentication; add access control before public use.
 Tests cover generated Wasm + Sinatra and real workerd with a controlled HTTP
 upstream: the first chunk must arrive before the upstream can finish. Local
 browser checks cover incremental Japanese text and cancellation. Real-model
-inference and deployment are not part of these tests.
+streaming was also verified manually using the remote AI binding; the
+automated tests remain independent of an AI account. Deployment is untested.
 
 The Ruby VM closes at handoff. Ruby cannot enumerate, transform or observe
 completion of the stream; middleware must preserve the body. See

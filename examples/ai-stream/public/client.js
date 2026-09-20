@@ -43,8 +43,13 @@ form.addEventListener("submit", async event => {
         if (data === "[DONE]") { complete = true; break; }
         const message = JSON.parse(data);
         if (message.error) throw new Error("AIがエラーを返しました");
-        output.textContent += message.response ?? message.choices?.[0]?.delta?.content ?? "";
-        status.textContent = "受信中…";
+        output.textContent += message.response ??
+          message.choices?.[0]?.delta?.content ?? "";
+        if (message.choices?.[0]?.delta?.reasoning_content) {
+          status.textContent = "推論中…";
+        } else {
+          status.textContent = "受信中…";
+        }
       }
       if (done) {
         if (!complete) throw new Error("完了通知の前に接続が終了しました");
@@ -56,7 +61,7 @@ form.addEventListener("submit", async event => {
     status.textContent = error.name === "AbortError" ? "停止しました。" : `受信エラー: ${error.message}`;
   } finally {
     if (reader) {
-      await reader.cancel().catch(() => {});
+      await reader.cancel().catch(() => { });
       reader.releaseLock();
     }
     active = null;
