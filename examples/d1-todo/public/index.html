@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PicoRuby D1 Todo</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f4f1ea;
+      color: #18201d;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; padding: 48px 20px; }
+    main {
+      width: min(680px, 100%);
+      margin: 0 auto;
+      padding: 32px;
+      border: 1px solid #d7d2c7;
+      border-radius: 20px;
+      background: #fffdf8;
+      box-shadow: 0 18px 50px rgb(60 50 35 / 10%);
+    }
+    h1 { margin: 0; font-size: clamp(2rem, 7vw, 3.5rem); letter-spacing: -0.06em; }
+    .lead { margin: 8px 0 28px; color: #65706b; }
+    form { display: flex; gap: 10px; }
+    input, button { font: inherit; }
+    input {
+      min-width: 0;
+      flex: 1;
+      padding: 12px 14px;
+      border: 1px solid #c8c2b7;
+      border-radius: 10px;
+      background: white;
+    }
+    button {
+      border: 0;
+      border-radius: 10px;
+      padding: 12px 16px;
+      cursor: pointer;
+      background: #176b4d;
+      color: white;
+      font-weight: 700;
+    }
+    button:disabled { cursor: wait; opacity: 0.55; }
+    ul { display: grid; gap: 10px; padding: 0; margin: 28px 0 0; list-style: none; }
+    li {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px;
+      border: 1px solid #e3ded4;
+      border-radius: 12px;
+      background: white;
+    }
+    li.done .title { color: #8a918d; text-decoration: line-through; }
+    .toggle { width: 20px; height: 20px; accent-color: #176b4d; }
+    .title { flex: 1; overflow-wrap: anywhere; }
+    .delete { padding: 7px 10px; background: transparent; color: #a13d32; }
+    .empty, .error { margin: 28px 0 0; text-align: center; color: #757d79; }
+    .error { color: #a13d32; }
+    footer { margin-top: 28px; color: #8a918d; font-size: 0.85rem; text-align: center; }
+    @media (max-width: 520px) {
+      body { padding: 20px 12px; }
+      main { padding: 24px 18px; }
+      form { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Todo</h1>
+    <p class="lead">PicoRuby + Sinatra + Cloudflare D1</p>
+    <form id="todo-form">
+      <input id="todo-title" name="title" maxlength="200" required autocomplete="off" placeholder="What needs doing?">
+      <button type="submit">Add task</button>
+    </form>
+    <p id="message" role="status" hidden></p>
+    <ul id="todo-list" aria-live="polite"></ul>
+    <footer>Stored at the edge with Cloudflare D1</footer>
+  </main>
+  <script>
+    const form = document.querySelector("#todo-form");
+    const input = document.querySelector("#todo-title");
+    const list = document.querySelector("#todo-list");
+    const message = document.querySelector("#message");
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        ...options,
+        headers: { "content-type": "application/json", ...(options.headers || {}) },
+      });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+      return body;
+    }
+
+    function showMessage(text, error = false) {
+      message.hidden = !text;
+      message.className = error ? "error" : "empty";
+      message.textContent = text;
+    }
+
+    function render(todos) {
+      list.replaceChildren();
+      showMessage(todos.length ? "" : "No tasks yet. Add the first one!");
+      for (const todo of todos) {
+        const item = document.createElement("li");
+        item.className = todo.completed ? "done" : "";
+
+        const toggle = document.createElement("input");
+        toggle.className = "toggle";
+        toggle.type = "checkbox";
+        toggle.checked = todo.completed;
+        toggle.setAttribute("aria-label", `Mark ${todo.title} as ${todo.completed ? "open" : "complete"}`);
+        toggle.addEventListener("change", async () => {
+          toggle.disabled = true;
+          try {
+            await api(`/api/todos/${todo.id}`, {
+              method: "PATCH",
+              body: JSON.stringify({ completed: toggle.checked }),
+            });
+            await loadTodos();
+          } catch (error) {
+            showMessage(error.message, true);
+            toggle.checked = !toggle.checked;
+            toggle.disabled = false;
+          }
+        });
+
+        const title = document.createElement("span");
+        title.className = "title";
+        title.textContent = todo.title;
+
+        const remove = document.createElement("button");
+        remove.className = "delete";
+        remove.type = "button";
+        remove.textContent = "Delete";
+        remove.addEventListener("click", async () => {
+          remove.disabled = true;
+          try {
+            await api(`/api/todos/${todo.id}`, { method: "DELETE" });
+            await loadTodos();
+          } catch (error) {
+            showMessage(error.message, true);
+            remove.disabled = false;
+          }
+        });
+
+        item.append(toggle, title, remove);
+        list.append(item);
+      }
+    }
+
+    async function loadTodos() {
+      try {
+        render(await api("/api/todos"));
+      } catch (error) {
+        showMessage(error.message, true);
+      }
+    }
+
+    form.addEventListener("submit", async event => {
+      event.preventDefault();
+      const title = input.value.trim();
+      if (!title) return;
+      const button = form.querySelector("button");
+      button.disabled = true;
+      try {
+        await api("/api/todos", { method: "POST", body: JSON.stringify({ title }) });
+        form.reset();
+        await loadTodos();
+        input.focus();
+      } catch (error) {
+        showMessage(error.message, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    loadTodos();
+  </script>
+</body>
+</html>
