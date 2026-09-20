@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PicoRuby · AI stream</title>
+<style>
+  body { max-width: 760px; margin: 4rem auto; padding: 0 1.5rem; color: #24313a; background: #f7f8fa; font: 17px/1.7 system-ui, sans-serif; }
+  h1 { font-size: 2rem; margin-bottom: .3rem; }
+  label { display: block; margin-top: 2rem; }
+  textarea { box-sizing: border-box; width: 100%; padding: 1rem; font: inherit; border: 1px solid #a6b2bd; border-radius: .5rem; }
+  button { padding: .7rem 1.3rem; margin: 1rem .5rem 0 0; font: inherit; border-radius: .5rem; border: 1px solid #2b5267; cursor: pointer; }
+  button[type=submit] { background: #2b5267; color: white; }
+  button:disabled { opacity: .45; cursor: default; }
+  #output { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 8rem; background: white; padding: 1.5rem; border-radius: .5rem; }
+  #status { color: #526773; }
+</style>
+<h1>PicoRuby · AI stream</h1>
+<p>Workers AIから届いた言葉を、少しずつ表示します。</p>
+<form id="chat">
+  <label for="prompt">メッセージ</label>
+  <textarea id="prompt" rows="3" required maxlength="4000">Rubyと雲をテーマに短い物語を書いてください。</textarea>
+  <button id="send" type="submit">送信</button>
+  <button id="stop" type="button" disabled>停止</button>
+</form>
+<p id="status" role="status">送信すると、ここに回答が届きます。</p>
+<article id="output" aria-label="AIの回答"></article>
+<script type="module" src="/client.js"></script>
+</html>

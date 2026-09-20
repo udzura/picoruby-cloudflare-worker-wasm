@@ -20,12 +20,14 @@ The adapter currently provides:
 - String and Array-of-String response header values, including repeated
   `set-cookie` values;
 - Enumerable response bodies yielding Strings;
+- pass-through `Cloudflare::HostStreamBody` responses from Workers AI;
 - response body `close`, including errors and HEAD requests;
 - reverse-order `rack.response_finished` callbacks;
 - empty response bodies for HEAD, 204, 205, and 304.
 
-The JavaScript host reads the Worker `Request` body asynchronously. The complete
-response is still buffered before a Worker `Response` is created. Ruby dispatch
+The JavaScript host reads the Worker `Request` body asynchronously. Each
+Enumerable response is buffered before a Worker `Response` is created. A
+HostStreamBody transfers a JS stream handle instead; its bytes bypass Ruby. Ruby dispatch
 is synchronous from the application's perspective, but a C-backed method may
 suspend the Wasm stack through JSPI while awaiting a JavaScript Promise.
 
@@ -54,7 +56,7 @@ PicoRuby-facing adapter.
   optional services are not installed by the server.
 - Request bodies, Enumerable response bodies, and ABI frames have fixed memory
   limits and are fully buffered.
-- `rack.response_finished` runs after the Ruby body has been buffered, not after
+- `rack.response_finished` runs after buffering or host-stream handoff, not after
   Cloudflare finishes sending the network response.
 - `config.ru` parsing and `Rack::Builder` are not supported; register the
   handler directly from the compiled application.
@@ -86,7 +88,13 @@ response buffers. A failed dispatch releases the queue, and `closeRuntime`
 waits for already queued dispatches before closing the VM. Separate runtime
 instances keep independent queues.
 
-Streaming request/response bodies would require a further host-driven protocol
-instead of one request frame and one response frame. Any incompatible wire or
-lifecycle change will receive a new ABI version and versioned exports rather
-than silently changing `picorb_worker_dispatch_v1`.
+ABI v3 adds `PRR2` responses with inline and host-stream body modes. The
+request format and `picorb_worker_dispatch_v1` export name are retained;
+the host checks ABI v3 before initialization. Host streams survive VM closure
+and forward backpressure, errors and cancellation in JS. They are a
+pass-through extension: Ruby `each`, body-wrapping middleware and callbacks
+at stream completion are not supported. See [ABI v3](abi-v3.md).
+
+Ruby-generated response streaming and streaming request bodies still require
+a further host-driven pump/read protocol. PicoRuby Task scheduling is a
+separate future step.
