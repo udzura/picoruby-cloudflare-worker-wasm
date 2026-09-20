@@ -39,19 +39,31 @@ export function extractStreamUsage(message) {
   return Object.values(values).some(value => value !== null) ? values : null;
 }
 
-export function updateStreamUsage(current, message) {
+function mergeStreamUsage(current, message, replace) {
   const incoming = extractStreamUsage(message);
   if (!incoming) return current;
-  const text = extractGlmStreamText(message);
-  const summary = !text.reasoning && !text.content;
   const next = current ? { ...current } : Object.fromEntries(
     usageNames.map(name => [name, null]),
   );
   for (const name of usageNames) {
     if (incoming[name] === null) continue;
-    next[name] = summary ? incoming[name] : (next[name] ?? 0) + incoming[name];
+    next[name] = replace ? incoming[name] : (next[name] ?? 0) + incoming[name];
   }
   return next;
+}
+
+export function isUsageOnlyStreamMessage(message) {
+  if (!extractStreamUsage(message)) return false;
+  const text = extractGlmStreamText(message);
+  return !text.reasoning && !text.content;
+}
+
+export function updateStreamUsage(current, message) {
+  return mergeStreamUsage(current, message, false);
+}
+
+export function replaceStreamUsage(current, message) {
+  return mergeStreamUsage(current, message, true);
 }
 
 export function formatUsageValue(value) {

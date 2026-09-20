@@ -1,6 +1,8 @@
 import {
   extractGlmStreamText,
   formatUsageValue,
+  isUsageOnlyStreamMessage,
+  replaceStreamUsage,
   updateStreamUsage,
 } from "/glm-stream.js";
 
@@ -20,6 +22,7 @@ const usageFields = {
 };
 let active;
 let usageTotals;
+let pendingUsageMessage;
 stop.addEventListener("click", () => active?.abort());
 
 function renderUsage(usage) {
@@ -32,6 +35,15 @@ function renderUsage(usage) {
   }
 }
 
+function applyUsage(message, replace = false) {
+  const updated = replace
+    ? replaceStreamUsage(usageTotals, message)
+    : updateStreamUsage(usageTotals, message);
+  if (updated === usageTotals) return;
+  usageTotals = updated;
+  renderUsage(usageTotals);
+}
+
 form.addEventListener("submit", async event => {
   event.preventDefault();
   active = new AbortController();
@@ -41,6 +53,7 @@ form.addEventListener("submit", async event => {
   output.textContent = "";
   usageSection.hidden = true;
   usageTotals = null;
+  pendingUsageMessage = null;
   status.textContent = "応答を待っています…";
   let reader;
   try {
@@ -69,14 +82,17 @@ form.addEventListener("submit", async event => {
         const data = event.split(/\r?\n/).filter(line => line.startsWith("data:"))
           .map(line => line.slice(5).replace(/^ /, "")).join("\n");
         if (!data) continue;
-        if (data === "[DONE]") { complete = true; break; }
+        if (data === "[DONE]") {
+          if (pendingUsageMessage) applyUsage(pendingUsageMessage, true);
+          pendingUsageMessage = null;
+          complete = true;
+          break;
+        }
         const message = JSON.parse(data);
         if (message.error) throw new Error("AIがエラーを返しました");
-        const updatedUsage = updateStreamUsage(usageTotals, message);
-        if (updatedUsage !== usageTotals) {
-          usageTotals = updatedUsage;
-          renderUsage(usageTotals);
-        }
+        if (pendingUsageMessage) applyUsage(pendingUsageMessage);
+        pendingUsageMessage = isUsageOnlyStreamMessage(message) ? message : null;
+        if (!pendingUsageMessage) applyUsage(message);
         const text = extractGlmStreamText(message);
         if (text.reasoning) {
           reasoningOutput.textContent += text.reasoning;

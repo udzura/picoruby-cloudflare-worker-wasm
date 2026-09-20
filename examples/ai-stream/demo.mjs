@@ -15,6 +15,7 @@ export default { fetch(request) {
     const chunks = [
       { choices: [{ delta: { reasoning: '物語の主題を考えます。', reasoning_content: '物語の主題を考えます。' } }], usage: usage(0.072812345) },
       { choices: [{ delta: { reasoning: 'Rubyと雲を結びつけます。', reasoning_content: 'Rubyと雲を結びつけます。' } }], usage: usage(0.081234567) },
+      { choices: [{ delta: {} }], usage: usage(0.01) },
       { choices: [{ delta: { content: 'Rubyの', reasoning_content: null } }], usage: usage(0.05) },
       { choices: [{ delta: { content: '小さな雲が、', reasoning_content: null } }], usage: usage(0.06) },
       { choices: [{ delta: { content: '空を旅していました。', reasoning_content: null } }], usage: usage(0.07) },

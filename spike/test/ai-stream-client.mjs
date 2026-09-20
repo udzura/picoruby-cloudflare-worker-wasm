@@ -3,6 +3,8 @@ import {
   extractGlmStreamText,
   extractStreamUsage,
   formatUsageValue,
+  isUsageOnlyStreamMessage,
+  replaceStreamUsage,
   updateStreamUsage,
 } from "../../examples/ai-stream/public/glm-stream.js";
 
@@ -73,7 +75,23 @@ assert.deepEqual(runningTokens, {
 assert.ok(Math.abs(runningNeurons - 0.154046912) < 1e-12);
 assert.equal(formatUsageValue(runningNeurons), "0.154");
 
-runningUsage = updateStreamUsage(runningUsage, {
+const emptyUsageEvent = {
+  choices: [{ delta: {} }],
+  usage: {
+    prompt_tokens: 0,
+    completion_tokens: 1,
+    total_tokens: 1,
+    prompt_tokens_details: { cached_tokens: 0 },
+    neurons: 0.01,
+  },
+};
+assert.equal(isUsageOnlyStreamMessage(emptyUsageEvent), true);
+runningUsage = updateStreamUsage(runningUsage, emptyUsageEvent);
+assert.equal(runningUsage.completionTokens, 5);
+assert.equal(runningUsage.totalTokens, 5);
+assert.ok(Math.abs(runningUsage.neurons - 0.164046912) < 1e-12);
+
+const summaryEvent = {
   response: "",
   usage: {
     prompt_tokens: 44,
@@ -82,9 +100,11 @@ runningUsage = updateStreamUsage(runningUsage, {
     prompt_tokens_details: { cached_tokens: 0 },
     neurons: 5.167315971106291,
   },
-});
+};
+assert.equal(isUsageOnlyStreamMessage(summaryEvent), true);
+runningUsage = replaceStreamUsage(runningUsage, summaryEvent);
 assert.deepEqual(runningUsage, usage);
 assert.equal(formatUsageValue(runningUsage.neurons), "5.1673");
 assert.equal(formatUsageValue(runningUsage.totalTokens), "187");
 
-console.log("AI stream client: usage accumulates, summarizes and rounds for display");
+console.log("AI stream client: only the final usage event replaces provisional totals");
