@@ -17,6 +17,7 @@ export default { fetch(request) {
       { choices: [{ delta: { content: 'Rubyの', reasoning_content: null } }] },
       { choices: [{ delta: { content: '小さな雲が、', reasoning_content: null } }] },
       { choices: [{ delta: { content: '空を旅していました。', reasoning_content: null } }] },
+      { response: '', usage: { prompt_tokens: 44, completion_tokens: 143, total_tokens: 187, prompt_tokens_details: { cached_tokens: 0 }, neurons: 5.167315971106291 } },
     ];
     return new ReadableStream({ async pull(controller) {
       await new Promise(resolve => setTimeout(resolve, 600));

@@ -17,6 +17,10 @@
   .stream-output:empty::before { content: attr(data-empty); color: #84919a; }
   #reasoning { max-height: 18rem; overflow-y: auto; background: #eef3f5; color: #455761; }
   #output { min-height: 8rem; }
+  #usage { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: .75rem; margin: 0; }
+  #usage div { padding: .75rem 1rem; background: white; border: 1px solid #d8dee3; border-radius: .5rem; }
+  #usage dt { color: #667984; font-size: .8rem; }
+  #usage dd { margin: .15rem 0 0; font-variant-numeric: tabular-nums; }
   #status { color: #526773; }
 </style>
 <h1>PicoRuby · AI stream</h1>
@@ -35,6 +39,16 @@
 <section class="result" aria-labelledby="output-heading">
   <h2 id="output-heading">出力</h2>
   <article id="output" class="stream-output" data-empty="回答が届くと、ここに表示されます。"></article>
+</section>
+<section id="usage-section" class="result" aria-labelledby="usage-heading" hidden>
+  <h2 id="usage-heading">利用状況</h2>
+  <dl id="usage">
+    <div><dt>入力トークン</dt><dd id="prompt-tokens"></dd></div>
+    <div><dt>出力トークン</dt><dd id="completion-tokens"></dd></div>
+    <div><dt>合計トークン</dt><dd id="total-tokens"></dd></div>
+    <div><dt>キャッシュ済みトークン</dt><dd id="cached-tokens"></dd></div>
+    <div><dt>総利用ニュートン</dt><dd id="neurons"></dd></div>
+  </dl>
 </section>
 <script type="module" src="/client.js"></script>
 </html>

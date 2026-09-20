@@ -1,4 +1,4 @@
-import { extractGlmStreamText } from "/glm-stream.js";
+import { extractGlmStreamText, extractStreamUsage } from "/glm-stream.js";
 
 const form = document.querySelector("#chat");
 const send = document.querySelector("#send");
@@ -6,8 +6,26 @@ const stop = document.querySelector("#stop");
 const status = document.querySelector("#status");
 const reasoningOutput = document.querySelector("#reasoning");
 const output = document.querySelector("#output");
+const usageSection = document.querySelector("#usage-section");
+const usageFields = {
+  promptTokens: document.querySelector("#prompt-tokens"),
+  completionTokens: document.querySelector("#completion-tokens"),
+  totalTokens: document.querySelector("#total-tokens"),
+  cachedTokens: document.querySelector("#cached-tokens"),
+  neurons: document.querySelector("#neurons"),
+};
 let active;
 stop.addEventListener("click", () => active?.abort());
+
+function renderUsage(usage) {
+  if (!usage) return;
+  usageSection.hidden = false;
+  for (const [name, element] of Object.entries(usageFields)) {
+    const available = usage[name] !== null;
+    element.closest("div").hidden = !available;
+    if (available) element.textContent = String(usage[name]);
+  }
+}
 
 form.addEventListener("submit", async event => {
   event.preventDefault();
@@ -16,6 +34,7 @@ form.addEventListener("submit", async event => {
   stop.disabled = false;
   reasoningOutput.textContent = "";
   output.textContent = "";
+  usageSection.hidden = true;
   status.textContent = "応答を待っています…";
   let reader;
   try {
@@ -47,6 +66,7 @@ form.addEventListener("submit", async event => {
         if (data === "[DONE]") { complete = true; break; }
         const message = JSON.parse(data);
         if (message.error) throw new Error("AIがエラーを返しました");
+        renderUsage(extractStreamUsage(message));
         const text = extractGlmStreamText(message);
         if (text.reasoning) {
           reasoningOutput.textContent += text.reasoning;
