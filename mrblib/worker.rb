@@ -385,6 +385,8 @@ module PicoRubyWorker
     end
 
     def self.consume_body(env, status, body)
+      return body.stream_id if body.is_a?(Cloudflare::HostStreamBody)
+
       raise RackError, "Rack body must respond to each" unless body.respond_to?(:each)
       return "" if env["REQUEST_METHOD"] == "HEAD" || no_entity_status?(status)
 
@@ -904,6 +906,22 @@ module Cloudflare
     end
   end
 
+  # A pass-through body owned by the JavaScript host, not a Ruby enumerable.
+  class HostStreamBody
+    attr_reader :stream_id
+
+    def initialize(stream_id)
+      unless stream_id.is_a?(Integer) && stream_id > 0 && stream_id <= 0xffffffff
+        raise ArgumentError, "invalid host stream handle"
+      end
+      @stream_id = stream_id
+    end
+
+    def each
+      raise ProtocolError, "HostStreamBody cannot be consumed in Ruby"
+    end
+  end
+
   class AI < Binding
     class TextGenerationResult
       attr_reader :raw
@@ -963,7 +981,10 @@ module Cloudflare
     end
 
     def generate(model, input = {})
-      TextGenerationResult.new(run(model, input))
+      result = run(model, input)
+      return result if result.is_a?(HostStreamBody)
+
+      TextGenerationResult.new(result)
     end
 
     def embed(model, input = {})
@@ -975,9 +996,6 @@ module Cloudflare
         raise ArgumentError, "Cloudflare AI model must be a non-empty String without NUL bytes"
       end
       raise ArgumentError, "Cloudflare AI input must be a Hash" unless input.is_a?(Hash)
-      if input["stream"] == true || input[:stream] == true
-        raise ArgumentError, "Cloudflare AI streaming is not supported"
-      end
 
       begin
         input_json = JSON.generate(input)
@@ -985,6 +1003,8 @@ module Cloudflare
         raise ArgumentError, "invalid Cloudflare AI input: #{error.message}"
       end
       response = Cloudflare.__host_call("ai.run", @binding_name, [model, input_json])
+      return response if response.is_a?(HostStreamBody)
+
       begin
         JSON.parse(response)
       rescue JSON::JSONError => error

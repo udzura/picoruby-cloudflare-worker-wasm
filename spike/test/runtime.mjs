@@ -539,6 +539,12 @@ const runtimeWorkerEnv = {
   },
   AI: {
     async run(model, input) {
+      if (input.stream) return new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("data: hello\n\n"));
+          controller.close();
+        },
+      });
       runtimeAiCalls.push([model, input]);
       if (model === "@cf/test/embedding") {
         return { data: [[0.1, 0.2], [0.3, 0.4]], shape: [2, 2], pooling: "mean" };
@@ -908,7 +914,7 @@ assert.equal(await aiAliasResponse.text(), "same");
 const aiStreamResponse = await dispatch(bindingsRuntime, new Request("https://example.com/ai/stream"));
 assert.equal(
   await aiStreamResponse.text(),
-  "argument-error=Cloudflare AI streaming is not supported",
+  "data: hello\n\n",
 );
 
 const vectorizeQueryResponse = await dispatch(

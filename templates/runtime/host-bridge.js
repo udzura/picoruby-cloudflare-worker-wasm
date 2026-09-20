@@ -11,6 +11,7 @@ export const HostResultKind = Object.freeze({
   bindingError: 3,
   argumentError: 4,
   protocolError: 5,
+  hostStream: 6,
 });
 
 export class HostBridgeError extends Error {
@@ -120,7 +121,7 @@ export function decodeHostCall(frame) {
 }
 
 export function encodeHostResult(kind, payload = new Uint8Array()) {
-  if (!Number.isInteger(kind) || kind < HostResultKind.ok || kind > HostResultKind.protocolError) {
+  if (!Number.isInteger(kind) || kind < HostResultKind.ok || kind > HostResultKind.hostStream) {
     throw new TypeError("Invalid host bridge result kind");
   }
 
@@ -145,7 +146,7 @@ export function decodeHostResult(frame) {
 
   const kind = readU32(bytes, 4);
   const length = readU32(bytes, 8);
-  if (kind > HostResultKind.protocolError || length !== bytes.byteLength - 12) {
+  if (kind > HostResultKind.hostStream || length !== bytes.byteLength - 12) {
     throw new HostBridgeError("Invalid PicoRuby host bridge result");
   }
   return { kind, payload: bytes.slice(12) };
@@ -197,7 +198,7 @@ export function hostMissing() {
 
 export function hostErrorMessage(frame) {
   const result = decodeHostResult(frame);
-  return result.kind >= HostResultKind.error ? decoder.decode(result.payload) : null;
+  return result.kind >= HostResultKind.error && result.kind <= HostResultKind.protocolError ? decoder.decode(result.payload) : null;
 }
 
 export function utf8(value) {

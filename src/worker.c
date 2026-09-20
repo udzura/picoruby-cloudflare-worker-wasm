@@ -19,9 +19,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define PICORB_WORKER_ABI_VERSION 2u
+#define PICORB_WORKER_ABI_VERSION 3u
 #define PICORB_WORKER_REQUEST_MAGIC "PRQ1"
-#define PICORB_WORKER_RESPONSE_MAGIC "PRR1"
+#define PICORB_WORKER_RESPONSE_MAGIC "PRR2"
 #define PICORB_WORKER_MAX_REQUEST_FRAME_SIZE (2u * 1024u * 1024u)
 #define PICORB_WORKER_MAX_RESPONSE_FRAME_SIZE (8u * 1024u * 1024u)
 #define PICORB_WORKER_MAX_BINDING_NAME_SIZE 256u
@@ -75,7 +75,8 @@ enum picorb_worker_host_result_kind {
   PICORB_WORKER_HOST_ERROR = 2,
   PICORB_WORKER_HOST_BINDING_ERROR = 3,
   PICORB_WORKER_HOST_ARGUMENT_ERROR = 4,
-  PICORB_WORKER_HOST_PROTOCOL_ERROR = 5
+  PICORB_WORKER_HOST_PROTOCOL_ERROR = 5,
+  PICORB_WORKER_HOST_STREAM = 6
 };
 
 typedef struct picorb_worker_host_result {
@@ -464,7 +465,7 @@ decode_host_result(const uint8_t *frame, size_t frame_len, picorb_worker_host_re
 
   uint32_t kind = read_u32_le(frame + 4);
   uint32_t payload_len = read_u32_le(frame + 8);
-  if (kind > PICORB_WORKER_HOST_PROTOCOL_ERROR ||
+  if (kind > PICORB_WORKER_HOST_STREAM ||
       payload_len != frame_len - PICORB_WORKER_HOST_RESULT_HEADER_SIZE) {
     return FALSE;
   }
@@ -904,6 +905,16 @@ mrb_cloudflare_host_call(mrb_state *mrb, mrb_value self)
     free((void *)frame_ptr);
     return mrb_nil_value();
   }
+  if (result.kind == PICORB_WORKER_HOST_STREAM) {
+    if (result.payload_len != 4 || read_u32_le(result.payload) == 0) {
+      free((void *)frame_ptr);
+      raise_cloudflare_error(mrb, "ProtocolError", "invalid host stream handle");
+    }
+    mrb_value handle = mrb_int_value(mrb, read_u32_le(result.payload));
+    free((void *)frame_ptr);
+    struct RClass *cloudflare = mrb_module_get(mrb, "Cloudflare");
+    return mrb_obj_new(mrb, mrb_class_get_under(mrb, cloudflare, "HostStreamBody"), 1, &handle);
+  }
   if (result.kind >= PICORB_WORKER_HOST_ERROR) {
     raise_host_result_error(mrb, &result, frame_ptr);
   }
@@ -1157,7 +1168,7 @@ encode_response(mrb_state *mrb, mrb_value result)
   mrb_value status_value = mrb_ary_ref(mrb, result, 0);
   mrb_value headers = mrb_ary_ref(mrb, result, 1);
   mrb_value body = mrb_ary_ref(mrb, result, 2);
-  if (!mrb_integer_p(status_value) || !mrb_array_p(headers) || !mrb_string_p(body)) {
+  if (!mrb_integer_p(status_value) || !mrb_array_p(headers) || (!mrb_string_p(body) && !mrb_integer_p(body))) {
     set_error_literal("Rack adapter returned invalid response types");
     return PICORB_WORKER_INVALID_RESPONSE;
   }
@@ -1169,7 +1180,12 @@ encode_response(mrb_state *mrb, mrb_value result)
     return PICORB_WORKER_INVALID_RESPONSE;
   }
 
-  size_t total = 12;
+  mrb_bool host_stream = mrb_integer_p(body);
+  if (host_stream && (mrb_integer(body) <= 0 || (uint64_t)mrb_integer(body) > UINT32_MAX)) {
+    set_error_literal("Invalid host stream handle");
+    return PICORB_WORKER_INVALID_RESPONSE;
+  }
+  size_t total = host_stream ? 20 : 16;
   mrb_int index = 0;
   while (index < header_items) {
     mrb_value name = mrb_ary_ref(mrb, headers, index);
@@ -1180,7 +1196,7 @@ encode_response(mrb_state *mrb, mrb_value result)
     }
     index += 2;
   }
-  if (!add_encoded_string_size(&total, body) || total > PICORB_WORKER_MAX_RESPONSE_FRAME_SIZE) {
+  if ((!host_stream && !add_encoded_string_size(&total, body)) || total > PICORB_WORKER_MAX_RESPONSE_FRAME_SIZE) {
     set_error_literal("Rack response frame is too large");
     return PICORB_WORKER_INVALID_RESPONSE;
   }
@@ -1202,7 +1218,9 @@ encode_response(mrb_state *mrb, mrb_value result)
     write_encoded_string(&cursor, mrb_ary_ref(mrb, headers, index + 1));
     index += 2;
   }
-  write_encoded_string(&cursor, body);
+  write_u32(&cursor, host_stream ? 1u : 0u);
+  if (host_stream) write_u32(&cursor, (uint32_t)mrb_integer(body));
+  else write_encoded_string(&cursor, body);
   response_buffer.ptr[total] = '\0';
   response_buffer.len = total;
   return PICORB_WORKER_OK;
