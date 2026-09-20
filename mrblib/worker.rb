@@ -220,7 +220,8 @@ module PicoRubyWorker
         headers = response[1]
         body = response[2]
         normalized_headers = normalize_headers(status, headers)
-        normalized_body = consume_body(env, status, body)
+        descriptor = env["cloudflare.hijack"]
+        normalized_body = descriptor ? hijack_body(descriptor, body) : consume_body(env, status, body)
         result = [status, normalized_headers, normalized_body]
       rescue => exception
         error = exception
@@ -272,6 +273,7 @@ module PicoRubyWorker
         "rack.errors" => RackErrors.new,
         "rack.response_finished" => [],
         "cloudflare.env" => Cloudflare::Environment.new,
+        "cloudflare.hijack" => nil,
       }
 
       index = 0
@@ -404,6 +406,15 @@ module PicoRubyWorker
         end
       end
       content
+    end
+
+    def self.hijack_body(descriptor, body)
+      unless descriptor.is_a?(Cloudflare::StreamDescriptor)
+        raise RackError, "cloudflare.hijack must contain a Cloudflare::StreamDescriptor"
+      end
+      raise RackError, "Rack body must respond to each" unless body.respond_to?(:each)
+
+      descriptor.id
     end
 
     def self.append_body_part(content, part)
@@ -904,6 +915,22 @@ module Cloudflare
     end
   end
 
+  # An opaque handle for a ReadableStream owned by the JavaScript host.
+  class StreamDescriptor
+    attr_reader :id
+
+    def initialize(id)
+      unless id.is_a?(Integer) && id > 0 && id <= 0xffffffff
+        raise ArgumentError, "invalid stream descriptor"
+      end
+      @id = id
+    end
+
+    class << self
+      private :new
+    end
+  end
+
   class AI < Binding
     class TextGenerationResult
       attr_reader :raw
@@ -963,7 +990,10 @@ module Cloudflare
     end
 
     def generate(model, input = {})
-      TextGenerationResult.new(run(model, input))
+      result = run(model, input)
+      return result if result.is_a?(StreamDescriptor)
+
+      TextGenerationResult.new(result)
     end
 
     def embed(model, input = {})
@@ -975,9 +1005,6 @@ module Cloudflare
         raise ArgumentError, "Cloudflare AI model must be a non-empty String without NUL bytes"
       end
       raise ArgumentError, "Cloudflare AI input must be a Hash" unless input.is_a?(Hash)
-      if input["stream"] == true || input[:stream] == true
-        raise ArgumentError, "Cloudflare AI streaming is not supported"
-      end
 
       begin
         input_json = JSON.generate(input)
@@ -985,6 +1012,8 @@ module Cloudflare
         raise ArgumentError, "invalid Cloudflare AI input: #{error.message}"
       end
       response = Cloudflare.__host_call("ai.run", @binding_name, [model, input_json])
+      return response if response.is_a?(StreamDescriptor)
+
       begin
         JSON.parse(response)
       rescue JSON::JSONError => error

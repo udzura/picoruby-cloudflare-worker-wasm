@@ -281,11 +281,9 @@ class BindingsApp
       explicit = Cloudflare::AI.from_env(env, "AI")
       [200, { "content-type" => "text/plain" }, [direct.equal?(explicit) ? "same" : "different"]]
     when "/ai/stream"
-      begin
-        env["cloudflare.env"].AI.run("@cf/test/model", { "stream" => true })
-      rescue ArgumentError => error
-        [200, { "content-type" => "text/plain" }, ["argument-error=#{error.message}"]]
-      end
+      descriptor = env["cloudflare.env"].AI.run("@cf/test/model", { "stream" => true })
+      env["cloudflare.hijack"] = descriptor
+      [200, { "content-type" => "text/event-stream" }, []]
     when "/vectorize/query"
       result = env["cloudflare.env"].VECTOR_INDEX.query(
         [0.1, 0.2, 0.3], top_k: 2, return_values: true,

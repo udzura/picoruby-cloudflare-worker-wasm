@@ -12,15 +12,98 @@ import {
   utf8,
 } from "./host-bridge.js";
 
-const ABI_VERSION = 2;
+const ABI_VERSION = 3;
 const REQUEST_MAGIC = new Uint8Array([0x50, 0x52, 0x51, 0x31]); // PRQ1
-const RESPONSE_MAGIC = new Uint8Array([0x50, 0x52, 0x52, 0x31]); // PRR1
+const RESPONSE_MAGIC = new Uint8Array([0x50, 0x52, 0x52, 0x32]); // PRR2
 const DEFAULT_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const strictDecoder = new TextDecoder("utf-8", { fatal: true });
 const missingEnvironmentValue = Symbol("missingEnvironmentValue");
 const dispatchQueues = new WeakMap();
+const hostContexts = new WeakMap();
+const runtimeStreams = new WeakMap();
+
+// A separate registry is created for every VM, even if callers reuse bindings.
+export class HostStreamRegistry {
+  constructor() {
+    this.streams = new Map();
+    this.nextId = 1;
+  }
+
+  register(stream) {
+    if (!(stream instanceof ReadableStream) || stream.locked) {
+      throw new HostProtocolError("Cloudflare AI streaming result must be an unlocked ReadableStream");
+    }
+    if (this.nextId > 0xffffffff) throw new HostProtocolError("Host stream handles exhausted");
+    const id = this.nextId++;
+    this.streams.set(id, stream);
+    const payload = new Uint8Array(4);
+    new DataView(payload.buffer).setUint32(0, id, true);
+    return { kind: HostResultKind.hostStream, payload };
+  }
+
+  take(id) {
+    const stream = this.streams.get(id);
+    if (!stream) throw new HostProtocolError("Unknown or already transferred host stream handle");
+    this.streams.delete(id);
+    return stream;
+  }
+
+  discard() {
+    for (const stream of this.streams.values()) {
+      // Do not delay the response on an upstream cancellation promise.
+      stream.cancel("Host stream was not returned").catch(() => {});
+    }
+    this.streams.clear();
+  }
+}
+
+function responseStream(source, signal) {
+  const reader = source.getReader();
+  let finished = false;
+  let controller;
+  const finish = () => {
+    finished = true;
+    signal?.removeEventListener("abort", abort);
+    reader.releaseLock();
+  };
+  const cancel = (reason) => {
+    if (finished) return;
+    finished = true;
+    signal?.removeEventListener("abort", abort);
+    return reader.cancel(reason).catch(() => {}).finally(() => reader.releaseLock());
+  };
+  const abort = () => {
+    if (finished) return;
+    controller.error(signal.reason);
+    void cancel(signal.reason);
+  };
+  return new ReadableStream({
+    start(value) {
+      controller = value;
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
+    },
+    async pull() {
+      try {
+        const { done, value } = await reader.read();
+        if (finished) return;
+        if (done) {
+          controller.close();
+          finish();
+        } else {
+          controller.enqueue(value);
+        }
+      } catch (error) {
+        if (finished) return;
+        controller.error(error);
+        finish();
+      }
+    },
+    cancel,
+  }, { highWaterMark: 0 });
+}
 
 export class RequestBodyTooLargeError extends Error {
   constructor(limit) {
@@ -359,7 +442,7 @@ function validateJsonValue(value, label, ancestors = new Set()) {
   ancestors.delete(value);
 }
 
-async function executeAiRun(env, bindingTypes, bindingName, model, inputJson) {
+async function executeAiRun(env, bindingTypes, bindingName, model, inputJson, streams) {
   return await captureHostCall(async () => {
     if (typeof bindingName !== "string" || bindingName.length === 0) {
       throw new HostArgumentError("Cloudflare AI binding name must be a non-empty string");
@@ -382,12 +465,10 @@ async function executeAiRun(env, bindingTypes, bindingName, model, inputJson) {
     if (!input || typeof input !== "object" || Array.isArray(input)) {
       throw new HostArgumentError("Cloudflare AI input must be a JSON object");
     }
-    if (input.stream === true) {
-      throw new HostArgumentError("Cloudflare AI streaming is not supported");
-    }
     validateJsonValue(input, "Cloudflare AI input");
 
     const result = await ai.run(model, input);
+    if (input.stream === true) return streams.register(result);
     validateJsonValue(result, "Cloudflare AI");
     return hostOk(utf8(JSON.stringify(result)));
   });
@@ -700,6 +781,7 @@ export function createFetchBindings(fetcher = (...args) => globalThis.fetch(...a
 }
 
 export function createCloudflareBindings(env, bindingTypes) {
+  const streams = new HostStreamRegistry();
   const types = normalizeBindingTypes(bindingTypes);
   const operationBindings = mergeBindings(
     createCloudflareKvBindings(env, types),
@@ -726,7 +808,7 @@ export function createCloudflareBindings(env, bindingTypes) {
       bindingName, decodeHostCallText(request),
     ),
     "ai.run": ([model, input], bindingName) => executeAiRun(
-      env, types, bindingName, decodeHostCallText(model), decodeHostCallText(input),
+      env, types, bindingName, decodeHostCallText(model), decodeHostCallText(input), streams,
     ),
     "vectorize.query": ([request], bindingName) => executeVectorize(
       env, types, bindingName, "query", decodeHostCallText(request),
@@ -773,7 +855,7 @@ export function createCloudflareBindings(env, bindingTypes) {
     "vectorize.describe": 1,
     "fetch": 2,
   };
-  return mergeBindings(
+  const bindings = mergeBindings(
     {
       picorbWorkerHostCallBridge: async (frame) => {
         let call;
@@ -796,6 +878,11 @@ export function createCloudflareBindings(env, bindingTypes) {
     },
     createEnvironmentBindings(env, types),
   );
+  hostContexts.set(bindings.picorbWorkerHostCallBridge, {
+    streams,
+    create: () => createCloudflareBindings(env, types),
+  });
+  return bindings;
 }
 
 function decodeHostCallText(bytes) {
@@ -997,7 +1084,7 @@ export async function encodeRackRequest(request, options = {}) {
   return writer.finish();
 }
 
-export function decodeRackResponse(frame, requestMethod = "GET") {
+export function decodeRackResponse(frame, requestMethod = "GET", streams, signal) {
   const reader = new FrameReader(frame);
   const magic = reader.readBytes(RESPONSE_MAGIC.byteLength);
   for (let index = 0; index < RESPONSE_MAGIC.byteLength; index += 1) {
@@ -1016,15 +1103,38 @@ export function decodeRackResponse(frame, requestMethod = "GET") {
   for (let index = 0; index < headerCount; index += 1) {
     headers.append(reader.readString(), reader.readString());
   }
-  const body = reader.readBytes(reader.readU32()).slice();
+  const mode = reader.readU32();
+  if (mode !== 0 && mode !== 1) throw new Error("Unknown PicoRuby response body mode");
+  const bodyData = mode === 0 ? reader.readBytes(reader.readU32()).slice() : reader.readU32();
   reader.finish();
 
   const bodyAllowed = requestMethod !== "HEAD" && status !== 204 && status !== 205 && status !== 304;
-  return new Response(bodyAllowed ? body : null, { status, headers });
+  if (mode === 0) return new Response(bodyAllowed ? bodyData : null, { status, headers });
+  if (!streams) throw new Error("Host stream registry is unavailable");
+  // A streaming length is unknown, and transport framing belongs to Workers.
+  headers.delete("content-length");
+  headers.delete("transfer-encoding");
+  const source = streams.take(bodyData);
+  if (!bodyAllowed) {
+    source.cancel("Response does not permit a body").catch(() => {});
+    return new Response(null, { status, headers });
+  }
+  const body = responseStream(source, signal);
+  try {
+    return new Response(body, { status, headers });
+  } catch (error) {
+    body.cancel(error).catch(() => {});
+    throw error;
+  }
 }
 
 export async function createRuntime(createPicoRuby, wasmModule, appBytecode, runtimeBindings = {}) {
   const bindings = mergeBindings(runtimeBindings);
+  const context = hostContexts.get(bindings.picorbWorkerHostCallBridge);
+  if (context) {
+    bindings.picorbWorkerHostCallBridge = context.create().picorbWorkerHostCallBridge;
+  }
+  const streams = hostContexts.get(bindings.picorbWorkerHostCallBridge)?.streams;
   const module = await createPicoRuby({
     ...defaultRuntimeBindings,
     ...bindings,
@@ -1035,6 +1145,7 @@ export async function createRuntime(createPicoRuby, wasmModule, appBytecode, run
     },
   });
 
+  runtimeStreams.set(module, streams);
   const actualAbiVersion = module._picorb_worker_abi_version();
   if (actualAbiVersion !== ABI_VERSION) {
     throw new Error(`PicoRuby Worker ABI ${ABI_VERSION} is required (found ${actualAbiVersion})`);
@@ -1053,6 +1164,10 @@ export async function createRuntime(createPicoRuby, wasmModule, appBytecode, run
     if (status !== 0) {
       throw new Error(`PicoRuby initialization failed: ${readRuntimeError(module)}`);
     }
+  } catch (error) {
+    streams?.discard();
+    await closeRuntime(module);
+    throw error;
   } finally {
     module._free(pointer);
   }
@@ -1063,6 +1178,7 @@ export async function closeRuntime(module) {
   const pendingDispatch = dispatchQueues.get(module);
   if (pendingDispatch) await pendingDispatch.catch(() => {});
 
+  runtimeStreams.get(module)?.discard();
   await module.ccall(
     "picorb_worker_close",
     null,
@@ -1120,8 +1236,9 @@ async function dispatchOnce(module, request, requestOptions) {
     const responsePointer = module._picorb_worker_response_ptr();
     const responseLength = module._picorb_worker_response_len();
     const responseFrame = module.HEAPU8.slice(responsePointer, responsePointer + responseLength);
-    return decodeRackResponse(responseFrame, request.method);
+    return decodeRackResponse(responseFrame, request.method, runtimeStreams.get(module), request.signal);
   } finally {
+    runtimeStreams.get(module)?.discard();
     module._free(pointer);
   }
 }
