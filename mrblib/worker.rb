@@ -220,7 +220,8 @@ module PicoRubyWorker
         headers = response[1]
         body = response[2]
         normalized_headers = normalize_headers(status, headers)
-        normalized_body = consume_body(env, status, body)
+        descriptor = env["cloudflare.hijack"]
+        normalized_body = descriptor ? hijack_body(descriptor, body) : consume_body(env, status, body)
         result = [status, normalized_headers, normalized_body]
       rescue => exception
         error = exception
@@ -272,6 +273,7 @@ module PicoRubyWorker
         "rack.errors" => RackErrors.new,
         "rack.response_finished" => [],
         "cloudflare.env" => Cloudflare::Environment.new,
+        "cloudflare.hijack" => nil,
       }
 
       index = 0
@@ -404,6 +406,15 @@ module PicoRubyWorker
         end
       end
       content
+    end
+
+    def self.hijack_body(descriptor, body)
+      unless descriptor.is_a?(Cloudflare::StreamDescriptor)
+        raise RackError, "cloudflare.hijack must contain a Cloudflare::StreamDescriptor"
+      end
+      raise RackError, "Rack body must respond to each" unless body.respond_to?(:each)
+
+      descriptor.id
     end
 
     def self.append_body_part(content, part)
@@ -583,6 +594,10 @@ module Cloudflare
           value = DurableObject.__build(binding_name)
         elsif type == "d1"
           value = D1.__build(binding_name)
+        elsif type == "ai"
+          value = AI.__build(binding_name)
+        elsif type == "vectorize"
+          value = Vectorize.__build(binding_name)
         else
           present, value = Cloudflare.__env_lookup(binding_name)
           return MISSING unless present
@@ -897,6 +912,173 @@ module Cloudflare
       JSON.parse(json)
     rescue JSON::JSONError => error
       raise ProtocolError, "invalid Cloudflare D1 JSON: #{error.message}"
+    end
+  end
+
+  # An opaque handle for a ReadableStream owned by the JavaScript host.
+  class StreamDescriptor
+    attr_reader :id
+
+    def initialize(id)
+      unless id.is_a?(Integer) && id > 0 && id <= 0xffffffff
+        raise ArgumentError, "invalid stream descriptor"
+      end
+      @id = id
+    end
+
+    class << self
+      private :new
+    end
+  end
+
+  class AI < Binding
+    class TextGenerationResult
+      attr_reader :raw
+
+      def initialize(raw)
+        unless raw.is_a?(Hash) && raw.key?("response")
+          raise ProtocolError, "Cloudflare AI text generation result must contain a response"
+        end
+        @raw = raw
+      end
+
+      def response
+        @raw["response"]
+      end
+
+      def usage
+        @raw["usage"]
+      end
+    end
+
+    class EmbeddingResult
+      attr_reader :raw, :vectors, :shape
+
+      def initialize(raw)
+        unless raw.is_a?(Hash) && raw["data"].is_a?(Array) &&
+            raw["shape"].is_a?(Array) && raw["shape"].length == 2
+          raise ProtocolError, "Cloudflare AI embedding result must contain data and a two-item shape"
+        end
+        count, dimensions = raw["shape"]
+        unless count.is_a?(Integer) && count >= 0 && dimensions.is_a?(Integer) && dimensions >= 0 &&
+            raw["data"].length == count && raw["data"].all? { |vector|
+              vector.is_a?(Array) && vector.length == dimensions &&
+                vector.all? { |value| value.is_a?(Numeric) }
+            }
+          raise ProtocolError, "Cloudflare AI embedding data does not match its shape"
+        end
+        @raw = raw
+        @vectors = raw["data"]
+        @shape = raw["shape"]
+      end
+
+      def count
+        @shape[0]
+      end
+
+      def dimensions
+        @shape[1]
+      end
+
+      def first
+        @vectors[0]
+      end
+
+      def pooling
+        @raw["pooling"]
+      end
+    end
+
+    def generate(model, input = {})
+      result = run(model, input)
+      return result if result.is_a?(StreamDescriptor)
+
+      TextGenerationResult.new(result)
+    end
+
+    def embed(model, input = {})
+      EmbeddingResult.new(run(model, input))
+    end
+
+    def run(model, input = {})
+      unless model.is_a?(String) && !model.empty? && !model.include?("\0")
+        raise ArgumentError, "Cloudflare AI model must be a non-empty String without NUL bytes"
+      end
+      raise ArgumentError, "Cloudflare AI input must be a Hash" unless input.is_a?(Hash)
+
+      begin
+        input_json = JSON.generate(input)
+      rescue JSON::JSONError => error
+        raise ArgumentError, "invalid Cloudflare AI input: #{error.message}"
+      end
+      response = Cloudflare.__host_call("ai.run", @binding_name, [model, input_json])
+      return response if response.is_a?(StreamDescriptor)
+
+      begin
+        JSON.parse(response)
+      rescue JSON::JSONError => error
+        raise ProtocolError, "invalid Cloudflare AI response JSON: #{error.message}"
+      end
+    end
+  end
+
+  class Vectorize < Binding
+    def query(vector, top_k: 5, return_values: false, return_metadata: :none, namespace: nil, filter: nil)
+      __request("query", "vector" => vector,
+        "options" => __query_options(top_k, return_values, return_metadata, namespace, filter))
+    end
+
+    def query_by_id(id, top_k: 5, return_values: false, return_metadata: :none, namespace: nil, filter: nil)
+      __request("query_by_id", "id" => id,
+        "options" => __query_options(top_k, return_values, return_metadata, namespace, filter))
+    end
+
+    def insert(vectors)
+      __request("insert", "vectors" => vectors)
+    end
+
+    def upsert(vectors)
+      __request("upsert", "vectors" => vectors)
+    end
+
+    def get_by_ids(ids)
+      __request("get_by_ids", "ids" => ids)
+    end
+
+    def delete_by_ids(ids)
+      __request("delete_by_ids", "ids" => ids)
+    end
+
+    def describe
+      __request("describe")
+    end
+
+    private
+
+    def __query_options(top_k, return_values, return_metadata, namespace, filter)
+      metadata = return_metadata.to_s
+      options = {
+        "topK" => top_k,
+        "returnValues" => return_values,
+        "returnMetadata" => metadata,
+      }
+      options["namespace"] = namespace unless namespace.nil?
+      options["filter"] = filter unless filter.nil?
+      options
+    end
+
+    def __request(operation, request = {})
+      begin
+        request_json = JSON.generate(request)
+      rescue JSON::JSONError => error
+        raise ArgumentError, "invalid Cloudflare Vectorize request: #{error.message}"
+      end
+      response = Cloudflare.__host_call("vectorize.#{operation}", @binding_name, [request_json])
+      begin
+        JSON.parse(response)
+      rescue JSON::JSONError => error
+        raise ProtocolError, "invalid Cloudflare Vectorize response JSON: #{error.message}"
+      end
     end
   end
 

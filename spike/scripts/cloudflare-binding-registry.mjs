@@ -1,10 +1,12 @@
 import { parse, printParseErrorCode } from "jsonc-parser";
 
 const RESOURCE_BINDINGS = [
-  { section: "kv_namespaces", subsection: null, nameField: "binding", type: "kv" },
-  { section: "queues", subsection: "producers", nameField: "binding", type: "queue" },
-  { section: "durable_objects", subsection: "bindings", nameField: "name", type: "durable_object" },
-  { section: "d1_databases", subsection: null, nameField: "binding", type: "d1" },
+  { section: "kv_namespaces", subsection: null, nameField: "binding", type: "kv", singleton: false },
+  { section: "queues", subsection: "producers", nameField: "binding", type: "queue", singleton: false },
+  { section: "durable_objects", subsection: "bindings", nameField: "name", type: "durable_object", singleton: false },
+  { section: "d1_databases", subsection: null, nameField: "binding", type: "d1", singleton: false },
+  { section: "ai", subsection: null, nameField: "binding", type: "ai", singleton: true },
+  { section: "vectorize", subsection: null, nameField: "binding", type: "vectorize", singleton: false },
 ];
 
 export function parseCloudflareBindingTypes(source, environment = null) {
@@ -28,10 +30,17 @@ export function parseCloudflareBindingTypes(source, environment = null) {
 
   const entries = [];
   const names = new Set();
-  for (const { section, subsection, nameField, type } of RESOURCE_BINDINGS) {
-    const bindings = subsection === null ? selected[section] : selected[section]?.[subsection];
+  for (const { section, subsection, nameField, type, singleton } of RESOURCE_BINDINGS) {
+    let bindings = subsection === null ? selected[section] : selected[section]?.[subsection];
     if (bindings === undefined) continue;
-    if (!Array.isArray(bindings)) throw new TypeError(`${section}${subsection ? `.${subsection}` : ""} must be an array`);
+    if (singleton) {
+      if (!bindings || typeof bindings !== "object" || Array.isArray(bindings)) {
+        throw new TypeError(`${section} must be an object`);
+      }
+      bindings = [bindings];
+    } else if (!Array.isArray(bindings)) {
+      throw new TypeError(`${section}${subsection ? `.${subsection}` : ""} must be an array`);
+    }
     for (const binding of bindings) {
       const name = binding?.[nameField];
       if (typeof name !== "string" || name.length === 0) {

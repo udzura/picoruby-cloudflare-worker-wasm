@@ -16,13 +16,19 @@ Cloudflare bindings are documented in [docs/cloudflare-env.md](docs/cloudflare-e
 [docs/cloudflare-kv.md](docs/cloudflare-kv.md), and
 [docs/cloudflare-queue.md](docs/cloudflare-queue.md). D1 prepared statements are
 documented in [docs/cloudflare-d1.md](docs/cloudflare-d1.md). Durable Object POJO storage is
-documented in [docs/cloudflare-durable-object.md](docs/cloudflare-durable-object.md). Web Crypto bindings are
+documented in [docs/cloudflare-durable-object.md](docs/cloudflare-durable-object.md).
+Workers AI and Vectorize are documented in [docs/cloudflare-ai.md](docs/cloudflare-ai.md) and
+[docs/cloudflare-vectorize.md](docs/cloudflare-vectorize.md). Web Crypto bindings are
 documented in [docs/web-crypto.md](docs/web-crypto.md).
 
 An encrypted cookie-session example using the latest `mruby-rack` is available
 under [examples/cookie-simple](examples/cookie-simple/README.md).
 A Sinatra Todo application with a generated frontend and D1 persistence is
 available under [examples/d1-todo](examples/d1-todo/README.md).
+A Sinatra SSE endpoint with incremental browser display is available under
+[examples/ai-stream](examples/ai-stream/README.md).
+A Vectorize-backed RAG application with an incrementally rendered Workers AI
+answer is available under [examples/rag-stream](examples/rag-stream/README.md).
 
 ## Rack application
 
@@ -41,7 +47,8 @@ Rackup::Handler::CloudflareWorker.run(App)
 
 The runtime maps a Worker `Request` to a Rack environment and maps the returned
 `[status, headers, body]` tuple to a Worker `Response`. Request and response
-bodies are binary-safe but fully buffered in the initial implementation.
+bodies are binary-safe. Ordinary bodies are buffered; Workers AI streams can
+pass directly from the JS host to the client.
 
 This is a Rack protocol adapter, not the complete CRuby Rack distribution.
 See [docs/rack-compatibility.md](docs/rack-compatibility.md) for the supported
@@ -59,13 +66,15 @@ contract, limits, `Rack::Lint` results, and asynchronous roadmap.
 - Cloudflare Queue text-message producers using JSPI;
 - named Durable Objects storing JSON-compatible POJOs through JSPI;
 - D1 prepared statements, scalar binds, result modes, and transactional batches through JSPI;
+- JSON-compatible Workers AI inference and descriptor-based SSE hijacking through `Cloudflare::AI`;
+- Vectorize queries and vector lifecycle operations through `Cloudflare::Vectorize`;
 - buffered HTTP(S) text fetch using JSPI (see [fetch API](docs/cloudflare-fetch.md));
 - Web Crypto-backed `SecureRandom.random_number`, `SecureRandom.random_bytes`, and AES-GCM encryption;
 - Cloudflare Access Rack middleware (see [Access API](docs/cloudflare-access.md));
 - read-only Cloudflare text, JSON, and secret values through `ENV`;
 - request-scoped Worker binding access through Rack `cloudflare.env`;
 - no filesystem, sockets, runtime Ruby compilation,
-  D1 query builders, other Cloudflare binding adapters, or streaming bodies.
+  D1 query builders, other Cloudflare binding adapters, or Ruby-generated streaming bodies.
 
 `mruby-task` remains linked because it is required by `picoruby-mruby`, but the
 provided Worker HAL supports neither scheduling nor Fiber-based task APIs.
@@ -111,7 +120,7 @@ precompiled `WebAssembly.Module` through Emscripten's `instantiateWasm` hook.
 
 ## C ABI
 
-ABI version 1 exports:
+ABI version 3 exports:
 
 ```text
 picorb_worker_abi_version()
@@ -131,10 +140,11 @@ initialization. Dispatch may suspend at a JSPI-backed host call. A Ruby
 exception or an invalid response is reported through the error buffer and a
 non-zero status code.
 
-The v1 request frame begins with `PRQ1`; the response frame begins with `PRR1`.
+The v1 request frame begins with `PRQ1`; the response frame begins with `PRR2`.
 All integers are unsigned 32-bit little-endian values and all variable data is
 encoded as `byte_length` followed by exactly that many bytes. The complete
-layout is documented in [docs/abi-v1.md](docs/abi-v1.md).
+layout is documented in [docs/abi-v3.md](docs/abi-v3.md). The earlier
+[ABI v1](docs/abi-v1.md) document is retained for historical compatibility.
 
 ## Tests
 

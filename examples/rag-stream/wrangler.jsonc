@@ -1,0 +1,14 @@
+{
+  "$schema": "../../spike/node_modules/wrangler/config-schema.json",
+  "name": "picoruby-rag-stream",
+  "main": "worker.js",
+  "compatibility_date": "2026-08-22",
+  "ai": { "binding": "AI", "remote": true },
+  "vectorize": [{
+    "binding": "VECTOR_INDEX",
+    "index_name": "picoruby-rag-stream-documents",
+    "remote": true
+  }],
+  "assets": { "directory": "./public", "run_worker_first": ["/api/*"] },
+  "rules": [{ "type": "Data", "globs": ["**/*.bin"], "fallthrough": true }]
+}

@@ -20,14 +20,23 @@ The adapter currently provides:
 - String and Array-of-String response header values, including repeated
   `set-cookie` values;
 - Enumerable response bodies yielding Strings;
+- host stream descriptors selected through `cloudflare.hijack`;
 - response body `close`, including errors and HEAD requests;
 - reverse-order `rack.response_finished` callbacks;
 - empty response bodies for HEAD, 204, 205, and 304.
 
-The JavaScript host reads the Worker `Request` body asynchronously. The complete
-response is still buffered before a Worker `Response` is created. Ruby dispatch
-is synchronous from the application's perspective, but a C-backed method may
-suspend the Wasm stack through JSPI while awaiting a JavaScript Promise.
+The JavaScript host reads the Worker `Request` body asynchronously. Each
+Enumerable response is buffered before a Worker `Response` is created. A
+selected StreamDescriptor transfers a JS stream handle instead; its bytes
+bypass Ruby. Ruby dispatch is synchronous from the application's perspective,
+but a C-backed method may suspend the Wasm stack through JSPI while awaiting a
+JavaScript Promise.
+
+`cloudflare.hijack` is an adapter extension rather than Rack's standard
+full/partial hijack API. It starts as `nil`. When an application assigns a
+`Cloudflare::StreamDescriptor`, the server preserves the response status and
+headers, closes the Rack body without iterating it, and returns the registered
+host stream. Middleware that replaces such a response must clear the entry.
 
 ## Rack::Lint status
 
@@ -48,13 +57,13 @@ PicoRuby-facing adapter.
 - The final Fetch `Response` range is enforced as 200 through 599. Rack itself
   accepts status values starting at 100, so informational final responses are
   outside this adapter.
-- Streaming bodies that respond to `call`, full/partial hijacking, early hints,
+- Streaming bodies that respond to `call`, standard `rack.hijack`, early hints,
   protocol upgrades, and `to_path` optimization are not supported.
 - `rack.session`, `rack.logger`, multipart tempfile factories, and other
   optional services are not installed by the server.
 - Request bodies, Enumerable response bodies, and ABI frames have fixed memory
   limits and are fully buffered.
-- `rack.response_finished` runs after the Ruby body has been buffered, not after
+- `rack.response_finished` runs after buffering or host-stream handoff, not after
   Cloudflare finishes sending the network response.
 - `config.ru` parsing and `Rack::Builder` are not supported; register the
   handler directly from the compiled application.
@@ -86,7 +95,13 @@ response buffers. A failed dispatch releases the queue, and `closeRuntime`
 waits for already queued dispatches before closing the VM. Separate runtime
 instances keep independent queues.
 
-Streaming request/response bodies would require a further host-driven protocol
-instead of one request frame and one response frame. Any incompatible wire or
-lifecycle change will receive a new ABI version and versioned exports rather
-than silently changing `picorb_worker_dispatch_v1`.
+ABI v3 adds `PRR2` responses with inline and host-stream body modes. The
+request format and `picorb_worker_dispatch_v1` export name are retained;
+the host checks ABI v3 before initialization. Host streams survive VM closure
+and forward backpressure, errors and cancellation in JS. The selected stream
+cannot be read in Ruby, and callbacks at stream completion are not supported.
+See [ABI v3](abi-v3.md).
+
+Ruby-generated response streaming and streaming request bodies still require
+a further host-driven pump/read protocol. PicoRuby Task scheduling is a
+separate future step.

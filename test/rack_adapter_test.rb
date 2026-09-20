@@ -123,6 +123,7 @@ assert(
   captured_env["cloudflare.env"].is_a?(Cloudflare::Environment),
   "Cloudflare environment proxy is present",
 )
+assert_equal(nil, captured_env["cloudflare.hijack"], "Cloudflare hijack slot is initially empty")
 assert_equal([201, nil], finished, "response-finished callback runs")
 assert(response_body_source.closed, "enumerable response body is closed")
 
@@ -132,6 +133,37 @@ _status, _headers, head_content = PicoRubyWorker::RackAdapter.dispatch(request_f
 assert_equal("", head_content, "HEAD response body is empty")
 assert(!head_body.iterated, "HEAD response body is not consumed")
 assert(head_body.closed, "HEAD response body is closed")
+
+descriptor = Cloudflare::StreamDescriptor.send(:new, 23)
+assert_equal(23, descriptor.id, "stream descriptor exposes its registry id")
+assert_raises(NoMethodError, "stream descriptor cannot be constructed by applications") do
+  Cloudflare::StreamDescriptor.new(23)
+end
+assert_raises(ArgumentError, "zero stream descriptor is rejected") do
+  Cloudflare::StreamDescriptor.send(:new, 0)
+end
+
+hijacked_body = TestBody.new(["must not be consumed"])
+Rackup::Handler::CloudflareWorker.run(lambda do |env|
+  env["cloudflare.hijack"] = descriptor
+  [202, { "content-type" => "text/event-stream" }, hijacked_body]
+end)
+hijacked_status, hijacked_headers, hijacked_descriptor = PicoRubyWorker::RackAdapter.dispatch(request_frame)
+assert_equal(202, hijacked_status, "hijacked response status is preserved")
+assert_equal(["content-type", "text/event-stream"], hijacked_headers, "hijacked response headers are preserved")
+assert_equal(23, hijacked_descriptor, "hijacked response carries the stream descriptor id")
+assert(!hijacked_body.iterated, "hijacked Rack body is ignored")
+assert(hijacked_body.closed, "hijacked Rack body is closed")
+
+invalid_hijack_body = TestBody.new([])
+Rackup::Handler::CloudflareWorker.run(lambda do |env|
+  env["cloudflare.hijack"] = 23
+  [200, { "content-type" => "text/plain" }, invalid_hijack_body]
+end)
+assert_raises(PicoRubyWorker::RackError, "arbitrary integer hijack descriptor is rejected") do
+  PicoRubyWorker::RackAdapter.dispatch(request_frame)
+end
+assert(invalid_hijack_body.closed, "invalid hijack response body is closed")
 
 invalid_body = TestBody.new(["invalid"])
 Rackup::Handler::CloudflareWorker.run(lambda { |_env| [200, { "Content-Type" => "text/plain" }, invalid_body] })
