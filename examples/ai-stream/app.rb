@@ -4,14 +4,14 @@ class AIStreamApp < Sinatra::Base
 
   helpers do
     def cloudflare_hijack(descriptor)
+      content_type "text/event-stream"
+      headers "cache-control" => "no-cache"
       env["cloudflare.hijack"] = descriptor
       body []
     end
   end
 
   post "/api/chat" do
-    content_type "text/event-stream"
-    headers "cache-control" => "no-cache"
     prompt = request.body.read
     error 400, "A prompt is required" if prompt.empty?
     error 413, "Prompt is too long" if prompt.bytesize > 16_384
