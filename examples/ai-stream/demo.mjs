@@ -11,12 +11,13 @@ const script = `
 import worker from './worker.js';
 export default { fetch(request) {
   return worker.fetch(request, { AI: { async run() {
+    const usage = neurons => ({ prompt_tokens: 0, completion_tokens: 2, total_tokens: 2, prompt_tokens_details: { cached_tokens: 0 }, neurons });
     const chunks = [
-      { choices: [{ delta: { reasoning: '物語の主題を考えます。', reasoning_content: '物語の主題を考えます。' } }] },
-      { choices: [{ delta: { reasoning: 'Rubyと雲を結びつけます。', reasoning_content: 'Rubyと雲を結びつけます。' } }] },
-      { choices: [{ delta: { content: 'Rubyの', reasoning_content: null } }] },
-      { choices: [{ delta: { content: '小さな雲が、', reasoning_content: null } }] },
-      { choices: [{ delta: { content: '空を旅していました。', reasoning_content: null } }] },
+      { choices: [{ delta: { reasoning: '物語の主題を考えます。', reasoning_content: '物語の主題を考えます。' } }], usage: usage(0.072812345) },
+      { choices: [{ delta: { reasoning: 'Rubyと雲を結びつけます。', reasoning_content: 'Rubyと雲を結びつけます。' } }], usage: usage(0.081234567) },
+      { choices: [{ delta: { content: 'Rubyの', reasoning_content: null } }], usage: usage(0.05) },
+      { choices: [{ delta: { content: '小さな雲が、', reasoning_content: null } }], usage: usage(0.06) },
+      { choices: [{ delta: { content: '空を旅していました。', reasoning_content: null } }], usage: usage(0.07) },
       { response: '', usage: { prompt_tokens: 44, completion_tokens: 143, total_tokens: 187, prompt_tokens_details: { cached_tokens: 0 }, neurons: 5.167315971106291 } },
     ];
     return new ReadableStream({ async pull(controller) {

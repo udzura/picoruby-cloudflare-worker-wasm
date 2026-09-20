@@ -1,4 +1,8 @@
-import { extractGlmStreamText, extractStreamUsage } from "/glm-stream.js";
+import {
+  extractGlmStreamText,
+  formatUsageValue,
+  updateStreamUsage,
+} from "/glm-stream.js";
 
 const form = document.querySelector("#chat");
 const send = document.querySelector("#send");
@@ -15,15 +19,16 @@ const usageFields = {
   neurons: document.querySelector("#neurons"),
 };
 let active;
+let usageTotals;
 stop.addEventListener("click", () => active?.abort());
 
 function renderUsage(usage) {
   if (!usage) return;
   usageSection.hidden = false;
   for (const [name, element] of Object.entries(usageFields)) {
-    const available = usage[name] !== null;
+    const available = usage[name] != null;
     element.closest("div").hidden = !available;
-    if (available) element.textContent = String(usage[name]);
+    if (available) element.textContent = formatUsageValue(usage[name]);
   }
 }
 
@@ -35,6 +40,7 @@ form.addEventListener("submit", async event => {
   reasoningOutput.textContent = "";
   output.textContent = "";
   usageSection.hidden = true;
+  usageTotals = null;
   status.textContent = "応答を待っています…";
   let reader;
   try {
@@ -66,7 +72,11 @@ form.addEventListener("submit", async event => {
         if (data === "[DONE]") { complete = true; break; }
         const message = JSON.parse(data);
         if (message.error) throw new Error("AIがエラーを返しました");
-        renderUsage(extractStreamUsage(message));
+        const updatedUsage = updateStreamUsage(usageTotals, message);
+        if (updatedUsage !== usageTotals) {
+          usageTotals = updatedUsage;
+          renderUsage(usageTotals);
+        }
         const text = extractGlmStreamText(message);
         if (text.reasoning) {
           reasoningOutput.textContent += text.reasoning;

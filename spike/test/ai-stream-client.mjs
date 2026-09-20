@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import {
   extractGlmStreamText,
   extractStreamUsage,
+  formatUsageValue,
+  updateStreamUsage,
 } from "../../examples/ai-stream/public/glm-stream.js";
 
 const reasoning = extractGlmStreamText({
@@ -41,4 +43,48 @@ assert.deepEqual(usage, {
 });
 assert.equal(extractStreamUsage({ response: "" }), null);
 
-console.log("AI stream client: reasoning, output and usage remain separate");
+let runningUsage = updateStreamUsage(null, {
+  choices: [{ delta: { reasoning_content: "考えています" } }],
+  usage: {
+    prompt_tokens: 0,
+    completion_tokens: 2,
+    total_tokens: 2,
+    prompt_tokens_details: { cached_tokens: 0 },
+    neurons: 0.072812345,
+  },
+});
+runningUsage = updateStreamUsage(runningUsage, {
+  choices: [{ delta: { content: "回答中" } }],
+  usage: {
+    prompt_tokens: 0,
+    completion_tokens: 2,
+    total_tokens: 2,
+    prompt_tokens_details: { cached_tokens: 0 },
+    neurons: 0.081234567,
+  },
+});
+const { neurons: runningNeurons, ...runningTokens } = runningUsage;
+assert.deepEqual(runningTokens, {
+  promptTokens: 0,
+  completionTokens: 4,
+  totalTokens: 4,
+  cachedTokens: 0,
+});
+assert.ok(Math.abs(runningNeurons - 0.154046912) < 1e-12);
+assert.equal(formatUsageValue(runningNeurons), "0.154");
+
+runningUsage = updateStreamUsage(runningUsage, {
+  response: "",
+  usage: {
+    prompt_tokens: 44,
+    completion_tokens: 143,
+    total_tokens: 187,
+    prompt_tokens_details: { cached_tokens: 0 },
+    neurons: 5.167315971106291,
+  },
+});
+assert.deepEqual(runningUsage, usage);
+assert.equal(formatUsageValue(runningUsage.neurons), "5.1673");
+assert.equal(formatUsageValue(runningUsage.totalTokens), "187");
+
+console.log("AI stream client: usage accumulates, summarizes and rounds for display");

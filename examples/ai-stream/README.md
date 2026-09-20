@@ -4,9 +4,10 @@
 `Cloudflare::StreamDescriptor` and the `cloudflare.hijack` Rack extension.
 Static Assets serves the browser UI, which handles SSE/UTF-8 split across
 network chunks, displays GLM's `reasoning_content` and `content` separately as
-they arrive, and shows token and neuron usage when the stream supplies it. It
-also supports cancellation. The small `cloudflare_hijack` Sinatra helper sets
-the descriptor and returns an empty, valid Rack body.
+they arrive, and accumulates token and neuron usage until a final usage summary
+replaces the provisional values. It also supports cancellation. The small
+`cloudflare_hijack` Sinatra helper sets the descriptor and returns an empty,
+valid Rack body.
 
 ## Build once
 
