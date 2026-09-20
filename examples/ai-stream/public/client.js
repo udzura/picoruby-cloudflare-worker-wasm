@@ -54,7 +54,7 @@ form.addEventListener("submit", async event => {
   usageSection.hidden = true;
   usageTotals = null;
   pendingUsageMessage = null;
-  status.textContent = "応答を待っています…";
+  status.textContent = "Waiting for a response…";
   let reader;
   try {
     const response = await fetch("/api/chat", {
@@ -65,7 +65,7 @@ form.addEventListener("submit", async event => {
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     if (!response.headers.get("content-type")?.includes("text/event-stream")) {
-      throw new Error("SSE以外の応答を受信しました");
+      throw new Error("The response is not SSE");
     }
     reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -89,28 +89,28 @@ form.addEventListener("submit", async event => {
           break;
         }
         const message = JSON.parse(data);
-        if (message.error) throw new Error("AIがエラーを返しました");
+        if (message.error) throw new Error("The AI returned an error");
         if (pendingUsageMessage) applyUsage(pendingUsageMessage);
         pendingUsageMessage = isUsageOnlyStreamMessage(message) ? message : null;
         if (!pendingUsageMessage) applyUsage(message);
         const text = extractGlmStreamText(message);
         if (text.reasoning) {
           reasoningOutput.textContent += text.reasoning;
-          status.textContent = "推論中…";
+          status.textContent = "Reasoning…";
         }
         if (text.content) {
           output.textContent += text.content;
-          status.textContent = "出力中…";
+          status.textContent = "Generating output…";
         }
       }
       if (done) {
-        if (!complete) throw new Error("完了通知の前に接続が終了しました");
+        if (!complete) throw new Error("The connection closed before the completion event");
         break;
       }
     }
-    status.textContent = "完了しました。";
+    status.textContent = "Complete.";
   } catch (error) {
-    status.textContent = error.name === "AbortError" ? "停止しました。" : `受信エラー: ${error.message}`;
+    status.textContent = error.name === "AbortError" ? "Stopped." : `Receive error: ${error.message}`;
   } finally {
     if (reader) {
       await reader.cancel().catch(() => { });

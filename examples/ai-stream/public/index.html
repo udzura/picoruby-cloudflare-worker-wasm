@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ja">
+<html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PicoRuby · AI stream</title>
@@ -24,30 +24,30 @@
   #status { color: #526773; }
 </style>
 <h1>PicoRuby · AI stream</h1>
-<p>Workers AIから届いた言葉を、少しずつ表示します。</p>
+<p>Render words from Workers AI as they arrive.</p>
 <form id="chat">
-  <label for="prompt">メッセージ</label>
-  <textarea id="prompt" rows="3" required maxlength="4000">Rubyと雲をテーマに短い物語を書いてください。</textarea>
-  <button id="send" type="submit">送信</button>
-  <button id="stop" type="button" disabled>停止</button>
+  <label for="prompt">Message</label>
+  <textarea id="prompt" rows="3" required maxlength="4000">Write a short story about Ruby and clouds.</textarea>
+  <button id="send" type="submit">Send</button>
+  <button id="stop" type="button" disabled>Stop</button>
 </form>
-<p id="status" role="status">送信すると、ここに回答が届きます。</p>
+<p id="status" role="status">Send a message to receive an answer.</p>
 <section class="result" aria-labelledby="reasoning-heading">
-  <h2 id="reasoning-heading">推論</h2>
-  <article id="reasoning" class="stream-output" data-empty="推論が届くと、ここに表示されます。"></article>
+  <h2 id="reasoning-heading">Reasoning</h2>
+  <article id="reasoning" class="stream-output" data-empty="Reasoning will appear here."></article>
 </section>
 <section class="result" aria-labelledby="output-heading">
-  <h2 id="output-heading">出力</h2>
-  <article id="output" class="stream-output" data-empty="回答が届くと、ここに表示されます。"></article>
+  <h2 id="output-heading">Output</h2>
+  <article id="output" class="stream-output" data-empty="The answer will appear here."></article>
 </section>
 <section id="usage-section" class="result" aria-labelledby="usage-heading" hidden>
-  <h2 id="usage-heading">利用状況</h2>
+  <h2 id="usage-heading">Usage</h2>
   <dl id="usage">
-    <div><dt>入力トークン</dt><dd id="prompt-tokens"></dd></div>
-    <div><dt>出力トークン</dt><dd id="completion-tokens"></dd></div>
-    <div><dt>合計トークン</dt><dd id="total-tokens"></dd></div>
-    <div><dt>キャッシュ済みトークン</dt><dd id="cached-tokens"></dd></div>
-    <div><dt>総利用ニューロン</dt><dd id="neurons"></dd></div>
+    <div><dt>Input tokens</dt><dd id="prompt-tokens"></dd></div>
+    <div><dt>Output tokens</dt><dd id="completion-tokens"></dd></div>
+    <div><dt>Total tokens</dt><dd id="total-tokens"></dd></div>
+    <div><dt>Cached tokens</dt><dd id="cached-tokens"></dd></div>
+    <div><dt>Total neurons</dt><dd id="neurons"></dd></div>
   </dl>
 </section>
 <script type="module" src="/client.js"></script>
