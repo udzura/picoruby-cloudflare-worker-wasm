@@ -11,7 +11,12 @@
   button { padding: .7rem 1.3rem; margin: 1rem .5rem 0 0; font: inherit; border-radius: .5rem; border: 1px solid #2b5267; cursor: pointer; }
   button[type=submit] { background: #2b5267; color: white; }
   button:disabled { opacity: .45; cursor: default; }
-  #output { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 8rem; background: white; padding: 1.5rem; border-radius: .5rem; }
+  .result { margin-top: 1.5rem; }
+  .result h2 { margin: 0 0 .5rem; font-size: 1.1rem; }
+  .stream-output { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 4rem; background: white; padding: 1.25rem; border-radius: .5rem; border: 1px solid #d8dee3; }
+  .stream-output:empty::before { content: attr(data-empty); color: #84919a; }
+  #reasoning { max-height: 18rem; overflow-y: auto; background: #eef3f5; color: #455761; }
+  #output { min-height: 8rem; }
   #status { color: #526773; }
 </style>
 <h1>PicoRuby · AI stream</h1>
@@ -23,6 +28,13 @@
   <button id="stop" type="button" disabled>停止</button>
 </form>
 <p id="status" role="status">送信すると、ここに回答が届きます。</p>
-<article id="output" aria-label="AIの回答"></article>
+<section class="result" aria-labelledby="reasoning-heading">
+  <h2 id="reasoning-heading">推論</h2>
+  <article id="reasoning" class="stream-output" data-empty="推論が届くと、ここに表示されます。"></article>
+</section>
+<section class="result" aria-labelledby="output-heading">
+  <h2 id="output-heading">出力</h2>
+  <article id="output" class="stream-output" data-empty="回答が届くと、ここに表示されます。"></article>
+</section>
 <script type="module" src="/client.js"></script>
 </html>

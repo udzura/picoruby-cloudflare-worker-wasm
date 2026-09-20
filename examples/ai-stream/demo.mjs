@@ -11,13 +11,19 @@ const script = `
 import worker from './worker.js';
 export default { fetch(request) {
   return worker.fetch(request, { AI: { async run() {
-    const words = ['Rubyの', '小さな雲が、', '空を旅していました。', '\\n一文字ずつ、', '物語が届きます。'];
+    const chunks = [
+      { choices: [{ delta: { reasoning: '物語の主題を考えます。', reasoning_content: '物語の主題を考えます。' } }] },
+      { choices: [{ delta: { reasoning: 'Rubyと雲を結びつけます。', reasoning_content: 'Rubyと雲を結びつけます。' } }] },
+      { choices: [{ delta: { content: 'Rubyの', reasoning_content: null } }] },
+      { choices: [{ delta: { content: '小さな雲が、', reasoning_content: null } }] },
+      { choices: [{ delta: { content: '空を旅していました。', reasoning_content: null } }] },
+    ];
     return new ReadableStream({ async pull(controller) {
       await new Promise(resolve => setTimeout(resolve, 600));
-      const word = words.shift();
-      controller.enqueue(new TextEncoder().encode(word === undefined
-        ? 'data: [DONE]\\n\\n' : 'data: ' + JSON.stringify({ response: word }) + '\\n\\n'));
-      if (word === undefined) controller.close();
+      const chunk = chunks.shift();
+      controller.enqueue(new TextEncoder().encode(chunk === undefined
+        ? 'data: [DONE]\\n\\n' : 'data: ' + JSON.stringify(chunk) + '\\n\\n'));
+      if (chunk === undefined) controller.close();
     } }, { highWaterMark: 0 });
   } } });
 } };`;
@@ -39,9 +45,10 @@ const server = http.createServer(async (request, response) => {
   response.on("close", () => abort.abort());
   let reader;
   try {
-    if (request.url === "/" || request.url === "/client.js") {
+    if (["/", "/client.js", "/glm-stream.js"].includes(request.url)) {
       response.setHeader("content-type", request.url === "/" ? "text/html;charset=utf-8" : "text/javascript;charset=utf-8");
-      response.end(read(request.url === "/" ? "public/index.html" : "public/client.js"));
+      const asset = request.url === "/" ? "public/index.html" : `public${request.url}`;
+      response.end(read(asset));
       return;
     }
     const chunks = [];

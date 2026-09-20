@@ -1,7 +1,10 @@
+import { extractGlmStreamText } from "/glm-stream.js";
+
 const form = document.querySelector("#chat");
 const send = document.querySelector("#send");
 const stop = document.querySelector("#stop");
 const status = document.querySelector("#status");
+const reasoningOutput = document.querySelector("#reasoning");
 const output = document.querySelector("#output");
 let active;
 stop.addEventListener("click", () => active?.abort());
@@ -11,6 +14,7 @@ form.addEventListener("submit", async event => {
   active = new AbortController();
   send.disabled = true;
   stop.disabled = false;
+  reasoningOutput.textContent = "";
   output.textContent = "";
   status.textContent = "応答を待っています…";
   let reader;
@@ -43,12 +47,14 @@ form.addEventListener("submit", async event => {
         if (data === "[DONE]") { complete = true; break; }
         const message = JSON.parse(data);
         if (message.error) throw new Error("AIがエラーを返しました");
-        output.textContent += message.response ??
-          message.choices?.[0]?.delta?.content ?? "";
-        if (message.choices?.[0]?.delta?.reasoning_content) {
+        const text = extractGlmStreamText(message);
+        if (text.reasoning) {
+          reasoningOutput.textContent += text.reasoning;
           status.textContent = "推論中…";
-        } else {
-          status.textContent = "受信中…";
+        }
+        if (text.content) {
+          output.textContent += text.content;
+          status.textContent = "出力中…";
         }
       }
       if (done) {
