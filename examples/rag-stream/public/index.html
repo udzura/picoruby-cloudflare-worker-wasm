@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PicoRuby · RAG stream</title>
+<style>
+  :root { color: #1b2931; background: #f3f6f7; font: 16px/1.6 system-ui, sans-serif; }
+  body { max-width: 780px; margin: 3rem auto; padding: 0 1.25rem 5rem; }
+  h1 { margin-bottom: .25rem; } .lede, #status, .usage { color: #526773; }
+  .panel, .result { margin-top: 1.5rem; padding: 1.25rem; background: white; border: 1px solid #d8dee3; border-radius: .6rem; }
+  label { display: block; font-weight: 600; } textarea, input, button { font: inherit; }
+  textarea { box-sizing: border-box; width: 100%; margin-top: .4rem; padding: .75rem; border: 1px solid #a6b2bd; border-radius: .4rem; }
+  .controls { display: flex; gap: .75rem; align-items: end; margin-top: 1rem; } .top-k { width: 6rem; }
+  input { box-sizing: border-box; width: 100%; padding: .55rem; border: 1px solid #a6b2bd; border-radius: .4rem; }
+  button { padding: .6rem 1rem; border: 1px solid #2b5267; border-radius: .4rem; background: #2b5267; color: white; cursor: pointer; }
+  button.secondary { background: white; color: #2b5267; } button:disabled { opacity: .45; cursor: default; }
+  #status { min-height: 1.6rem; margin: 1rem 0; } #status.error { color: #9b3025; }
+  h2 { margin: 0 0 .5rem; font-size: 1.05rem; } #answer { white-space: pre-wrap; overflow-wrap: anywhere; min-height: 4rem; }
+  .citation { margin: 0 .12rem; padding: 0 .25rem; border: 0; background: #e4ebf2; color: #2b5267; font: inherit; cursor: pointer; }
+  .sources { padding-left: 1.5rem; } .sources li { margin: .75rem 0; scroll-margin-block: 2rem; }
+  .source-meta { color: #526773; font-size: .85rem; } .source-text { margin: .2rem 0; }
+  .flash { background: #fff3d9; } details { margin-top: 1.25rem; } pre { overflow: auto; white-space: pre-wrap; font-size: .8rem; }
+</style>
+<h1>PicoRuby · RAG stream</h1>
+<p class="lede">Search Vectorize for sources, then render a Workers AI answer incrementally over SSE.</p>
+<form id="rag" class="panel">
+  <label for="question">Question</label>
+  <textarea id="question" rows="3" required maxlength="2000" placeholder="e.g. What is PicoRuby?"></textarea>
+  <div class="controls">
+    <label class="top-k" for="top-k">top_k<input id="top-k" type="number" min="1" max="10" value="5"></label>
+    <button id="send" type="submit">Ask</button>
+    <button id="stop" class="secondary" type="button" disabled>Stop</button>
+  </div>
+</form>
+<p id="status" role="status">Submit a question to show sources and an answer.</p>
+<section id="result" class="result" hidden>
+  <h2>Answer</h2>
+  <article id="answer"></article>
+  <p id="usage" class="usage"></p>
+  <h2>Source documents</h2>
+  <ol id="sources" class="sources"></ol>
+  <details><summary>Show stream events (JSON)</summary><pre id="events"></pre></details>
+</section>
+<script type="module" src="/client.js"></script>
+</html>
