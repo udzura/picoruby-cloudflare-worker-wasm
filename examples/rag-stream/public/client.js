@@ -58,12 +58,12 @@ function updateUsage(message, replace = false) {
   }
   usageTotals = next;
   const parts = [];
-  if (next.promptTokens !== null) parts.push(`入力 ${formatter.format(next.promptTokens)}`);
-  if (next.completionTokens !== null) parts.push(`出力 ${formatter.format(next.completionTokens)}`);
-  if (next.totalTokens !== null) parts.push(`合計 ${formatter.format(next.totalTokens)}`);
-  if (next.cachedTokens !== null) parts.push(`キャッシュ済み ${formatter.format(next.cachedTokens)}`);
-  if (next.neurons !== null) parts.push(`総利用ニューロン ${formatter.format(next.neurons)}`);
-  usage.textContent = parts.length ? `利用状況: ${parts.join(" / ")}` : "";
+  if (next.promptTokens !== null) parts.push(`Input ${formatter.format(next.promptTokens)}`);
+  if (next.completionTokens !== null) parts.push(`Output ${formatter.format(next.completionTokens)}`);
+  if (next.totalTokens !== null) parts.push(`Total ${formatter.format(next.totalTokens)}`);
+  if (next.cachedTokens !== null) parts.push(`Cached ${formatter.format(next.cachedTokens)}`);
+  if (next.neurons !== null) parts.push(`Total neurons ${formatter.format(next.neurons)}`);
+  usage.textContent = parts.length ? `Usage: ${parts.join(" / ")}` : "";
 }
 
 function isUsageOnly(message) {
@@ -123,7 +123,7 @@ async function fetchJson(path, body) {
 }
 
 async function readStream(response) {
-  if (!response.body) throw new Error("ストリーム本文がありません");
+  if (!response.body) throw new Error("The response has no stream body");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let pending = "";
@@ -146,21 +146,21 @@ async function readStream(response) {
           break;
         }
         const message = JSON.parse(data);
-        if (message.error) throw new Error("AIがエラーを返しました");
+        if (message.error) throw new Error("The AI returned an error");
         streamEvents.push(message);
         if (pendingUsageMessage) updateUsage(pendingUsageMessage);
         pendingUsageMessage = isUsageOnly(message) ? message : null;
         if (!pendingUsageMessage) updateUsage(message);
         const text = extractText(message);
-        if (text.reasoning) setStatus("推論中…");
+        if (text.reasoning) setStatus("Reasoning…");
         if (text.content) {
           answerText += text.content;
           renderAnswer();
-          setStatus("回答を生成中…");
+          setStatus("Generating answer…");
         }
       }
       if (done) {
-        if (!complete) throw new Error("完了通知の前に接続が終了しました");
+        if (!complete) throw new Error("The connection closed before the completion event");
         break;
       }
     }
@@ -175,7 +175,7 @@ form.addEventListener("submit", async event => {
   event.preventDefault();
   const prompt = question.value.trim();
   const limit = Number(topK.value) || 5;
-  if (!prompt) return setStatus("質問を入力してください。", true);
+  if (!prompt) return setStatus("Enter a question.", true);
 
   active = new AbortController();
   const timeout = setTimeout(() => active?.abort(), 30_000);
@@ -189,13 +189,13 @@ form.addEventListener("submit", async event => {
   usage.textContent = "";
   events.textContent = "";
   result.hidden = true;
-  setStatus("根拠ドキュメントを検索中…");
+  setStatus("Searching source documents…");
   try {
     const search = await fetchJson("/api/search", { query: prompt, top_k: limit });
     const sourceList = Array.isArray(search.sources) ? search.sources : [];
     renderSources(sourceList);
     result.hidden = false;
-    setStatus("回答を生成中…");
+    setStatus("Generating answer…");
     const response = await fetch("/api/rag", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -204,13 +204,13 @@ form.addEventListener("submit", async event => {
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     if (!response.headers.get("content-type")?.includes("text/event-stream")) {
-      throw new Error("SSE以外の応答を受信しました");
+      throw new Error("The response is not SSE");
     }
     await readStream(response);
     events.textContent = JSON.stringify({ question: prompt, sources: sourceList, events: streamEvents }, null, 2);
-    setStatus("完了しました。");
+    setStatus("Complete.");
   } catch (error) {
-    setStatus(error.name === "AbortError" ? "停止しました。" : `リクエストに失敗しました: ${error.message}`, true);
+    setStatus(error.name === "AbortError" ? "Stopped." : `Request failed: ${error.message}`, true);
   } finally {
     clearTimeout(timeout);
     active = null;

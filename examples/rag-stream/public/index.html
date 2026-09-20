@@ -22,24 +22,24 @@
   .flash { background: #fff3d9; } details { margin-top: 1.25rem; } pre { overflow: auto; white-space: pre-wrap; font-size: .8rem; }
 </style>
 <h1>PicoRuby · RAG stream</h1>
-<p class="lede">Vectorizeで根拠を検索し、Workers AIの回答をSSEで少しずつ表示します。</p>
+<p class="lede">Search Vectorize for sources, then render a Workers AI answer incrementally over SSE.</p>
 <form id="rag" class="panel">
-  <label for="question">質問</label>
-  <textarea id="question" rows="3" required maxlength="2000" placeholder="例: PicoRubyとは何ですか？"></textarea>
+  <label for="question">Question</label>
+  <textarea id="question" rows="3" required maxlength="2000" placeholder="e.g. What is PicoRuby?"></textarea>
   <div class="controls">
     <label class="top-k" for="top-k">top_k<input id="top-k" type="number" min="1" max="10" value="5"></label>
-    <button id="send" type="submit">質問する</button>
-    <button id="stop" class="secondary" type="button" disabled>停止</button>
+    <button id="send" type="submit">Ask</button>
+    <button id="stop" class="secondary" type="button" disabled>Stop</button>
   </div>
 </form>
-<p id="status" role="status">質問を送信すると、根拠と回答を表示します。</p>
+<p id="status" role="status">Submit a question to show sources and an answer.</p>
 <section id="result" class="result" hidden>
-  <h2>回答</h2>
+  <h2>Answer</h2>
   <article id="answer"></article>
   <p id="usage" class="usage"></p>
-  <h2>根拠ドキュメント</h2>
+  <h2>Source documents</h2>
   <ol id="sources" class="sources"></ol>
-  <details><summary>ストリームイベントを表示 (JSON)</summary><pre id="events"></pre></details>
+  <details><summary>Show stream events (JSON)</summary><pre id="events"></pre></details>
 </section>
 <script type="module" src="/client.js"></script>
 </html>
