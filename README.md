@@ -25,6 +25,8 @@ An encrypted cookie-session example using the latest `mruby-rack` is available
 under [examples/cookie-simple](examples/cookie-simple/README.md).
 A Sinatra SSE endpoint with incremental browser display is available under
 [examples/ai-stream](examples/ai-stream/README.md).
+A Vectorize-backed RAG application with an incrementally rendered Workers AI
+answer is available under [examples/rag-stream](examples/rag-stream/README.md).
 
 ## Rack application
 
