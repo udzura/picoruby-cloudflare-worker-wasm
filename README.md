@@ -62,7 +62,7 @@ contract, limits, `Rack::Lint` results, and asynchronous roadmap.
 - Cloudflare Queue text-message producers using JSPI;
 - named Durable Objects storing JSON-compatible POJOs through JSPI;
 - D1 prepared statements, scalar binds, result modes, and transactional batches through JSPI;
-- JSON-compatible Workers AI inference and pass-through SSE streams through `Cloudflare::AI`;
+- JSON-compatible Workers AI inference and descriptor-based SSE hijacking through `Cloudflare::AI`;
 - Vectorize queries and vector lifecycle operations through `Cloudflare::Vectorize`;
 - buffered HTTP(S) text fetch using JSPI (see [fetch API](docs/cloudflare-fetch.md));
 - Web Crypto-backed `SecureRandom.random_number`, `SecureRandom.random_bytes`, and AES-GCM encryption;
