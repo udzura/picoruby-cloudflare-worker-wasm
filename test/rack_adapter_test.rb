@@ -26,16 +26,16 @@ def encode_string(value)
   encode_u32(string.bytesize) + string
 end
 
-def request_frame(method: "GET", path: "/", query: "", headers: [], body: "")
+def request_frame(method: "GET", path: "/", query: "", headers: [], input_id: 1)
   fields = [method, "https", "example.com", "443", "example.com", path, query, "HTTP/2"]
-  frame = "PRQ1".b
+  frame = "PRQ2".b
   fields.each { |field| frame << encode_string(field) }
   frame << encode_u32(headers.size)
   headers.each do |name, value|
     frame << encode_string(name)
     frame << encode_string(value)
   end
-  frame << encode_string(body)
+  frame << encode_u32(input_id)
   frame
 end
 
@@ -71,6 +71,22 @@ assert_equal("first\n", input.gets, "rack.input gets after rewind")
 input.close
 assert(input.closed?, "rack.input closes")
 
+input_streams = {}
+Cloudflare.define_singleton_method(:__host_call) do |operation, binding_name, arguments|
+  raise "unexpected host operation: #{operation}" unless operation == "input.read"
+  raise "input.read must not have a binding name" unless binding_name == ""
+  raise "input.read expects an input ID and length" unless arguments.size == 2
+
+  input_id = Integer(arguments[0])
+  length = Integer(arguments[1])
+  data = input_streams.fetch(input_id)
+  return nil if data.empty?
+
+  chunk = data.byteslice(0, length)
+  input_streams[input_id] = data.byteslice(chunk.bytesize, data.bytesize - chunk.bytesize)
+  chunk
+end
+
 captured_env = nil
 finished = nil
 response_body_source = TestBody.new([])
@@ -102,8 +118,9 @@ frame = request_frame(
     ["content-type", "application/octet-stream"],
     ["x-test-header", "yes"],
   ],
-  body: "\x00\xff".b,
+  input_id: 1,
 )
+input_streams[1] = "\x00\xff".b
 status, headers, response_body = PicoRubyWorker::RackAdapter.dispatch(frame)
 assert_equal(201, status, "Rack status is preserved")
 assert_equal(
@@ -119,6 +136,7 @@ assert_equal("application/octet-stream", captured_env["CONTENT_TYPE"], "content 
 assert_equal("request.example.com", captured_env["HTTP_HOST"], "Host header replaces the URL-derived authority")
 assert_equal("yes", captured_env["HTTP_X_TEST_HEADER"], "headers use HTTP_ CGI keys")
 assert_equal("HTTP/2", captured_env["SERVER_PROTOCOL"], "HTTP protocol is mapped")
+assert_equal(captured_env["rack.input"], captured_env["cloudflare.input"], "Cloudflare input aliases rack.input")
 assert(
   captured_env["cloudflare.env"].is_a?(Cloudflare::Environment),
   "Cloudflare environment proxy is present",
