@@ -14,7 +14,10 @@ PICORUBY_ROOT = ENV.fetch("PICORUBY_ROOT") do
   abort "Set PICORUBY_ROOT to a PicoRuby source checkout."
 end
 PICORUBY_RAKEFILE = File.join(PICORUBY_ROOT, "Rakefile")
-BUILD_CONFIG = File.join(SPIKE_ROOT, "build_config", "picoruby-worker-wasm.rb")
+BUILD_CONFIG = File.expand_path(
+  ENV.fetch("PICORUBY_BUILD_CONFIG", "build_config/picoruby-worker-wasm.rb"),
+  SPIKE_ROOT,
+)
 DIST_DIR = File.join(SPIKE_ROOT, "dist")
 APP_SOURCE = File.expand_path(ENV.fetch("PICORUBY_APP", "lib/app.rb"), SPIKE_ROOT)
 KV_TEST_APP_SOURCE = File.join(SPIKE_ROOT, "test", "kv_app.rb")

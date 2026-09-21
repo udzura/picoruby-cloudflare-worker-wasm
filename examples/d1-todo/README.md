@@ -27,7 +27,7 @@ watcher started by `npm run dev`.
 cd spike
 
 export PICORUBY_ROOT=/absolute/path/to/picoruby
-export PICORUBY_WORKER_WASM_GEM_DIR=..
+export PICORUBY_BUILD_CONFIG=../examples/d1-todo/build_config.rb
 export PICORUBY_APP=../examples/d1-todo/app.rb
 export WRANGLER_CONFIG=../examples/d1-todo/wrangler.jsonc
 
