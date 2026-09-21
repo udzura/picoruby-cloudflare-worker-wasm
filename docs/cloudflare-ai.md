@@ -22,9 +22,20 @@ result = ai.run(
 puts result["response"]
 ```
 
+`run` accepts an optional third Hash for Cloudflare's per-call options. For
+example, route a request through an AI Gateway:
+
+```ruby
+result = ai.run(
+  "@cf/meta/llama-3.1-8b-instruct",
+  { "prompt" => "Hello from PicoRuby" },
+  { "gateway" => { "id" => "my-ai-gateway" } }
+)
+```
+
 `Cloudflare::AI.from_env(env, "AI")` is the explicit equivalent. The model
-must be a non-empty String and the input must be a Hash. Responses are parsed
-from JSON and returned as ordinary PicoRuby JSON values.
+must be a non-empty String, and the input and options must be Hashes. Responses
+are parsed from JSON and returned as ordinary PicoRuby JSON values.
 
 `run` remains the model-agnostic API. For text-generation and embedding tasks,
 explicit helpers validate the expected response shape and retain the complete
