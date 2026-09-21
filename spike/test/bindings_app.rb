@@ -249,7 +249,8 @@ class BindingsApp
       [200, { "content-type" => "text/plain" }, [direct.equal?(explicit) ? "same" : "different"]]
     when "/ai/run"
       result = env["cloudflare.env"].AI.run(
-        "@cf/test/model", { "prompt" => "Hello", "temperature" => 0.25 }
+        "@cf/test/model", { "prompt" => "Hello", "temperature" => 0.25 },
+        { "gateway" => { "id" => "test-gateway" } }
       )
       [200, { "content-type" => "text/plain" }, [[
         result["response"], result["usage"]["total_tokens"],

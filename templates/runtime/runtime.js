@@ -442,7 +442,7 @@ function validateJsonValue(value, label, ancestors = new Set()) {
   ancestors.delete(value);
 }
 
-async function executeAiRun(env, bindingTypes, bindingName, model, inputJson, streams) {
+async function executeAiRun(env, bindingTypes, bindingName, model, inputJson, optionsJson, streams) {
   return await captureHostCall(async () => {
     if (typeof bindingName !== "string" || bindingName.length === 0) {
       throw new HostArgumentError("Cloudflare AI binding name must be a non-empty string");
@@ -467,7 +467,18 @@ async function executeAiRun(env, bindingTypes, bindingName, model, inputJson, st
     }
     validateJsonValue(input, "Cloudflare AI input");
 
-    const result = await ai.run(model, input);
+    let options;
+    try {
+      options = JSON.parse(optionsJson);
+    } catch {
+      throw new HostProtocolError("Cloudflare AI options contains invalid JSON");
+    }
+    if (!options || typeof options !== "object" || Array.isArray(options)) {
+      throw new HostArgumentError("Cloudflare AI options must be a JSON object");
+    }
+    validateJsonValue(options, "Cloudflare AI options");
+
+    const result = await ai.run(model, input, options);
     if (input.stream === true) return streams.register(result);
     validateJsonValue(result, "Cloudflare AI");
     return hostOk(utf8(JSON.stringify(result)));
@@ -807,8 +818,8 @@ export function createCloudflareBindings(env, bindingTypes) {
     "d1.execute": ([request], bindingName) => operationBindings.picorbWorkerD1Bridge(
       bindingName, decodeHostCallText(request),
     ),
-    "ai.run": ([model, input], bindingName) => executeAiRun(
-      env, types, bindingName, decodeHostCallText(model), decodeHostCallText(input), streams,
+    "ai.run": ([model, input, options], bindingName) => executeAiRun(
+      env, types, bindingName, decodeHostCallText(model), decodeHostCallText(input), decodeHostCallText(options), streams,
     ),
     "vectorize.query": ([request], bindingName) => executeVectorize(
       env, types, bindingName, "query", decodeHostCallText(request),
@@ -845,7 +856,7 @@ export function createCloudflareBindings(env, bindingTypes) {
     "durable_object.get": 1,
     "durable_object.put": 2,
     "d1.execute": 1,
-    "ai.run": 2,
+    "ai.run": 3,
     "vectorize.query": 1,
     "vectorize.query_by_id": 1,
     "vectorize.insert": 1,

@@ -1000,18 +1000,20 @@ module Cloudflare
       EmbeddingResult.new(run(model, input))
     end
 
-    def run(model, input = {})
+    def run(model, input = {}, options = {})
       unless model.is_a?(String) && !model.empty? && !model.include?("\0")
         raise ArgumentError, "Cloudflare AI model must be a non-empty String without NUL bytes"
       end
       raise ArgumentError, "Cloudflare AI input must be a Hash" unless input.is_a?(Hash)
+      raise ArgumentError, "Cloudflare AI options must be a Hash" unless options.is_a?(Hash)
 
       begin
         input_json = JSON.generate(input)
+        options_json = JSON.generate(options)
       rescue JSON::JSONError => error
-        raise ArgumentError, "invalid Cloudflare AI input: #{error.message}"
+        raise ArgumentError, "invalid Cloudflare AI argument: #{error.message}"
       end
-      response = Cloudflare.__host_call("ai.run", @binding_name, [model, input_json])
+      response = Cloudflare.__host_call("ai.run", @binding_name, [model, input_json, options_json])
       return response if response.is_a?(StreamDescriptor)
 
       begin

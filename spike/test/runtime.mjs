@@ -538,14 +538,14 @@ const runtimeWorkerEnv = {
     },
   },
   AI: {
-    async run(model, input) {
+    async run(model, input, options) {
       if (input.stream) return new ReadableStream({
         start(controller) {
           controller.enqueue(new TextEncoder().encode("data: hello\n\n"));
           controller.close();
         },
       });
-      runtimeAiCalls.push([model, input]);
+      runtimeAiCalls.push([model, input, options]);
       if (model === "@cf/test/embedding") {
         return { data: [[0.1, 0.2], [0.3, 0.4]], shape: [2, 2], pooling: "mean" };
       }
@@ -881,7 +881,7 @@ assert.equal(await d1AliasResponse.text(), "same");
 const aiRunResponse = await dispatch(bindingsRuntime, new Request("https://example.com/ai/run"));
 assert.equal(await aiRunResponse.text(), '["answer:Hello", 7]');
 assert.deepEqual(runtimeAiCalls, [[
-  "@cf/test/model", { prompt: "Hello", temperature: 0.25 },
+  "@cf/test/model", { prompt: "Hello", temperature: 0.25 }, { gateway: { id: "test-gateway" } },
 ]]);
 
 const aiGenerateResponse = await dispatch(bindingsRuntime, new Request("https://example.com/ai/generate"));
