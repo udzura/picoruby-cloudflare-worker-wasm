@@ -29,6 +29,7 @@ export class HostStreamRegistry {
   constructor() {
     this.streams = new Map();
     this.nextId = 1;
+    this.inputError = null;
   }
 
   register(stream) {
@@ -50,13 +51,15 @@ export class HostStreamRegistry {
     return entry.stream;
   }
 
-  registerInput(stream) {
+  registerInput(stream, maxBytes) {
     if (!(stream instanceof ReadableStream) || stream.locked) {
       throw new HostProtocolError("Cloudflare request body must be an unlocked ReadableStream");
     }
     if (this.nextId > 0xffffffff) throw new HostProtocolError("Host stream handles exhausted");
     const id = this.nextId++;
-    this.streams.set(id, { stream, reader: null, pending: null, eof: false });
+    this.streams.set(id, {
+      stream, reader: null, pending: null, eof: false, inputBytes: 0, maxBytes,
+    });
     return id;
   }
 
@@ -72,13 +75,28 @@ export class HostStreamRegistry {
       let value = entry.pending;
       entry.pending = null;
       if (!value) {
-        const next = await reader.read();
+        let next;
+        try {
+          next = await reader.read();
+        } catch (error) {
+          this.inputError = error;
+          throw error;
+        }
         if (next.done) {
           reader.releaseLock();
           entry.eof = true;
           break;
         }
         value = next.value;
+        entry.inputBytes += value.byteLength;
+        if (entry.maxBytes !== undefined && entry.inputBytes > entry.maxBytes) {
+          const error = new RequestBodyTooLargeError(entry.maxBytes);
+          this.inputError = error;
+          entry.eof = true;
+          await reader.cancel("PicoRuby request body limit exceeded");
+          reader.releaseLock();
+          throw error;
+        }
       }
       const chunk = value.subarray(0, length - total);
       chunks.push(chunk);
@@ -98,6 +116,12 @@ export class HostStreamRegistry {
       (reader ? reader.cancel("Host stream was not returned") : stream.cancel("Host stream was not returned")).catch(() => {});
     }
     this.streams.clear();
+  }
+
+  takeInputError() {
+    const error = this.inputError;
+    this.inputError = null;
+    return error;
   }
 }
 
@@ -1224,14 +1248,19 @@ async function readRequestBody(request, limit) {
 }
 
 export async function encodeRackRequest(request, options = {}, streams) {
+  const maxRequestBodyBytes = options.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES;
   const url = new URL(request.url);
   const scheme = url.protocol.slice(0, -1);
   const port = url.port || (scheme === "https" ? "443" : "80");
   const protocol = request.cf?.httpProtocol || "HTTP/1.1";
   const headers = Array.from(request.headers.entries());
   if (!streams) throw new Error("Host stream registry is unavailable");
+  const contentLength = request.headers.get("content-length");
+  if (contentLength !== null && Number(contentLength) > maxRequestBodyBytes) {
+    throw new RequestBodyTooLargeError(maxRequestBodyBytes);
+  }
   const body = request.body || new ReadableStream({ start(controller) { controller.close(); } });
-  const inputId = streams.registerInput(body);
+  const inputId = streams.registerInput(body, maxRequestBodyBytes);
 
   const writer = new FrameWriter();
   writer.appendBytes(REQUEST_MAGIC);
@@ -1304,16 +1333,18 @@ export async function createRuntime(createPicoRuby, wasmModule, appBytecode, run
   }
   const streams = hostContexts.get(bindings.picorbWorkerHostCallBridge)?.streams ?? new HostStreamRegistry();
   if (!context) {
+    const customHostBridge = bindings.picorbWorkerHostCallBridge;
     bindings.picorbWorkerHostCallBridge = async frame => {
       try {
         const call = decodeHostCall(frame);
-        if (call.operation !== "input.read" || call.bindingName !== "" || call.args.length !== 2) {
-          return protocolErrorFrame("Cloudflare host operation is unavailable");
+        if (call.operation === "input.read" && call.bindingName === "" && call.args.length === 2) {
+          return await captureHostCall(async () => {
+            const bytes = await streams.readInput(Number(decodeHostCallText(call.args[0])), Number(decodeHostCallText(call.args[1])));
+            return bytes === null ? hostMissing() : hostOk(bytes);
+          });
         }
-        return await captureHostCall(async () => {
-          const bytes = await streams.readInput(Number(decodeHostCallText(call.args[0])), Number(decodeHostCallText(call.args[1])));
-          return bytes === null ? hostMissing() : hostOk(bytes);
-        });
+        if (customHostBridge) return await customHostBridge(frame);
+        return protocolErrorFrame("Cloudflare host operation is unavailable");
       } catch (error) {
         return protocolErrorFrame(error instanceof Error ? error.message : String(error));
       }
@@ -1414,6 +1445,8 @@ async function dispatchOnce(module, request, requestOptions) {
       [pointer, frame.byteLength],
       { async: true },
     );
+    const inputError = streams?.takeInputError();
+    if (inputError) throw inputError;
     if (status !== 0) {
       throw new Error(`PicoRuby dispatch failed: ${readRuntimeError(module)}`);
     }

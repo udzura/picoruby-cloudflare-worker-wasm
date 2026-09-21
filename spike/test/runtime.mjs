@@ -1081,6 +1081,7 @@ const rejectedQueuedDispatch = dispatch(
   bindingsRuntime,
   new Request("https://example.com/echo", {
     method: "POST",
+    headers: { "content-length": "2" },
     body: new Uint8Array([1, 2]),
     duplex: "half",
   }),

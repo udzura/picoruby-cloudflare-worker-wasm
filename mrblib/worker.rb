@@ -715,7 +715,7 @@ module Cloudflare
 
     def put(key, value, options = {})
       if value.is_a?(InputStream)
-        return __object_request("put_input", [__key(key), value.__id.to_s, __options(options)])
+        return __object_request("put_input", [__key(key), value.__take_for_upload.to_s, __options(options)])
       end
       raise ArgumentError, "Cloudflare R2 value must be a String" unless value.is_a?(String)
 
@@ -1054,6 +1054,10 @@ module Cloudflare
       @id = id
       @closed = false
       @eof = false
+      @buffer = ""
+      @offset = 0
+      @read_started = false
+      @transferred = false
     end
 
     def read(length = nil, buffer = nil)
@@ -1067,21 +1071,50 @@ module Cloudflare
       end
       return "" if length == 0
 
-      result = ""
+      __ensure_readable
+      result = __consume(length)
       target = length
       while !@eof && (target.nil? || result.bytesize < target)
         size = target ? target - result.bytesize : DEFAULT_READ_SIZE
-        chunk = Cloudflare.__host_call("input.read", "", [@id.to_s, size.to_s])
-        if chunk.nil?
-          @eof = true
-          break
-        end
-        result << chunk
+        break unless __fill(size)
+        result << __consume(target ? target - result.bytesize : nil)
       end
       result = nil if result.empty? && target && @eof
       return result unless buffer && result
       buffer.replace(result)
       buffer
+    end
+
+    def gets(*arguments)
+      __ensure_readable
+      raise ArgumentError, "rack.input gets accepts at most one separator" if arguments.length > 1
+      separator = arguments.empty? ? "\n" : arguments[0]
+      return read if separator.nil?
+      raise ArgumentError, "rack.input separator must be a String or nil" unless separator.is_a?(String)
+      raise ArgumentError, "rack.input separator must not be empty" if separator.empty?
+
+      loop do
+        position = @buffer.index(separator, @offset)
+        return read(position + separator.bytesize - @offset) if position
+        return read if @eof
+
+        __fill(DEFAULT_READ_SIZE)
+      end
+    end
+
+    def each
+      return self unless block_given?
+
+      while (line = gets)
+        yield line
+      end
+      self
+    end
+
+    def rewind
+      __ensure_readable
+      @offset = 0
+      0
     end
 
     def close
@@ -1093,8 +1126,45 @@ module Cloudflare
       @id
     end
 
+    def __take_for_upload
+      raise ArgumentError, "Cloudflare input stream has already been read" if @read_started
+      raise ArgumentError, "Cloudflare input stream has already been transferred" if @transferred
+
+      @transferred = true
+      @id
+    end
+
     class << self
       private :new
+    end
+
+    private
+
+    def __ensure_readable
+      raise PicoRubyWorker::RackError, "rack.input is closed" if @closed
+      raise PicoRubyWorker::RackError, "rack.input has been transferred" if @transferred
+    end
+
+    def __consume(length)
+      available = @buffer.bytesize - @offset
+      count = length && available > length ? length : available
+      return "" unless count && count > 0
+
+      result = @buffer.byteslice(@offset, count)
+      @offset += result.bytesize
+      result
+    end
+
+    def __fill(length)
+      @read_started = true
+      chunk = Cloudflare.__host_call("input.read", "", [@id.to_s, length.to_s])
+      if chunk.nil?
+        @eof = true
+        false
+      else
+        @buffer << chunk
+        true
+      end
     end
   end
 
