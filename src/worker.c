@@ -19,9 +19,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define PICORB_WORKER_ABI_VERSION 4u
+#define PICORB_WORKER_ABI_VERSION 6u
 #define PICORB_WORKER_REQUEST_MAGIC "PRQ2"
 #define PICORB_WORKER_RESPONSE_MAGIC "PRR2"
+#define PICORB_WORKER_QUEUE_REQUEST_MAGIC "PCQ1"
+#define PICORB_WORKER_QUEUE_RESPONSE_MAGIC "PQR1"
 #define PICORB_WORKER_MAX_REQUEST_FRAME_SIZE (2u * 1024u * 1024u)
 #define PICORB_WORKER_MAX_RESPONSE_FRAME_SIZE (8u * 1024u * 1024u)
 #define PICORB_WORKER_MAX_BINDING_NAME_SIZE 256u
@@ -64,8 +66,14 @@ typedef struct picorb_worker_load_args {
   size_t mrb_len;
 } picorb_worker_load_args;
 
+static void write_u32(uint8_t **cursor, uint32_t value);
+static mrb_bool checked_add(size_t *total, size_t value);
+static mrb_bool add_encoded_string_size(size_t *total, mrb_value string);
+static void write_encoded_string(uint8_t **cursor, mrb_value string);
+
 static mrb_state *worker_mrb = NULL;
 static mrb_value dispatch_proc;
+static mrb_value queue_dispatch_proc;
 static picorb_worker_buffer response_buffer = { NULL, 0, 0 };
 static picorb_worker_buffer error_buffer = { NULL, 0, 0 };
 
@@ -1103,10 +1111,11 @@ load_app_body(mrb_state *mrb, void *userdata)
     mrb_raise(mrb, E_RUNTIME_ERROR, "PicoRubyWorker::DISPATCH is not a Proc");
   }
 
-  struct RClass *adapter = mrb_module_get_under(mrb, worker, "RackAdapter");
-  mrb_value registered = mrb_funcall(mrb, mrb_obj_value(adapter), "registered?", 0);
-  if (!mrb_test(registered)) {
-    mrb_raise(mrb, E_RUNTIME_ERROR, "Rack application is not registered");
+  struct RClass *queue_adapter = mrb_module_get_under(mrb, worker, "QueueAdapter");
+  queue_dispatch_proc = mrb_const_get(mrb, mrb_obj_value(queue_adapter),
+                                      mrb_intern_lit(mrb, "QUEUE_DISPATCH"));
+  if (!mrb_proc_p(queue_dispatch_proc)) {
+    mrb_raise(mrb, E_RUNTIME_ERROR, "PicoRubyWorker::QueueAdapter::QUEUE_DISPATCH is not a Proc");
   }
   return mrb_nil_value();
 }
@@ -1116,6 +1125,99 @@ execute_dispatch_body(mrb_state *mrb, void *userdata)
 {
   (void)userdata;
   return mrb_execute_proc_synchronously(mrb, dispatch_proc, 0, NULL);
+}
+
+static mrb_value
+execute_queue_dispatch_body(mrb_state *mrb, void *userdata)
+{
+  (void)userdata;
+  return mrb_execute_proc_synchronously(mrb, queue_dispatch_proc, 0, NULL);
+}
+
+static int
+encode_queue_action(mrb_state *mrb, mrb_value action, uint32_t *kind, uint32_t *delay)
+{
+  if (!mrb_array_p(action) || RARRAY_LEN(action) != 2) return PICORB_WORKER_INVALID_RESPONSE;
+  mrb_value kind_value = mrb_ary_ref(mrb, action, 0);
+  mrb_value delay_value = mrb_ary_ref(mrb, action, 1);
+  if (!mrb_integer_p(kind_value) || !mrb_integer_p(delay_value)) return PICORB_WORKER_INVALID_RESPONSE;
+  mrb_int action_kind = mrb_integer(kind_value);
+  mrb_int action_delay = mrb_integer(delay_value);
+  if (action_kind < 0 || action_kind > 2 || action_delay < 0 || (uint64_t)action_delay > UINT32_MAX ||
+      (action_kind != 2 && action_delay != 0)) return PICORB_WORKER_INVALID_RESPONSE;
+  *kind = (uint32_t)action_kind;
+  *delay = (uint32_t)action_delay;
+  return PICORB_WORKER_OK;
+}
+
+static int
+encode_queue_response(mrb_state *mrb, mrb_value result)
+{
+  if (!mrb_array_p(result) || RARRAY_LEN(result) != 3) {
+    set_error_literal("Queue adapter must return actions and an optional log record");
+    return PICORB_WORKER_INVALID_RESPONSE;
+  }
+  mrb_value batch_action = mrb_ary_ref(mrb, result, 0);
+  mrb_value message_actions = mrb_ary_ref(mrb, result, 1);
+  mrb_value log = mrb_ary_ref(mrb, result, 2);
+  if (!mrb_array_p(message_actions) || RARRAY_LEN(message_actions) > 1024) {
+    set_error_literal("Queue adapter returned invalid message actions");
+    return PICORB_WORKER_INVALID_RESPONSE;
+  }
+  uint32_t batch_kind, batch_delay;
+  if (encode_queue_action(mrb, batch_action, &batch_kind, &batch_delay) != PICORB_WORKER_OK) {
+    set_error_literal("Queue adapter returned an invalid batch action");
+    return PICORB_WORKER_INVALID_RESPONSE;
+  }
+  mrb_bool has_log = !mrb_nil_p(log);
+  if (has_log && (!mrb_array_p(log) || RARRAY_LEN(log) != 3 ||
+                  !mrb_string_p(mrb_ary_ref(mrb, log, 0)) ||
+                  !mrb_string_p(mrb_ary_ref(mrb, log, 1)) ||
+                  !mrb_string_p(mrb_ary_ref(mrb, log, 2)))) {
+    set_error_literal("Queue adapter returned an invalid log record");
+    return PICORB_WORKER_INVALID_RESPONSE;
+  }
+  size_t message_count = (size_t)RARRAY_LEN(message_actions);
+  size_t total = 20 + message_count * 8;
+  if (has_log && (!add_encoded_string_size(&total, mrb_ary_ref(mrb, log, 0)) ||
+                  !add_encoded_string_size(&total, mrb_ary_ref(mrb, log, 1)) ||
+                  !add_encoded_string_size(&total, mrb_ary_ref(mrb, log, 2)))) {
+    set_error_literal("Queue adapter log record is too large");
+    return PICORB_WORKER_INVALID_RESPONSE;
+  }
+  if (total > PICORB_WORKER_MAX_RESPONSE_FRAME_SIZE) {
+    set_error_literal("Queue response frame is too large");
+    return PICORB_WORKER_INVALID_RESPONSE;
+  }
+  int buffer_status = buffer_reserve(&response_buffer, total);
+  if (buffer_status != PICORB_WORKER_OK) {
+    set_error_literal("failed to allocate the Queue response buffer");
+    return buffer_status;
+  }
+  uint8_t *cursor = (uint8_t *)response_buffer.ptr;
+  memcpy(cursor, PICORB_WORKER_QUEUE_RESPONSE_MAGIC, 4);
+  cursor += 4;
+  write_u32(&cursor, batch_kind);
+  write_u32(&cursor, batch_delay);
+  write_u32(&cursor, (uint32_t)message_count);
+  for (size_t index = 0; index < message_count; index++) {
+    uint32_t kind, delay;
+    if (encode_queue_action(mrb, mrb_ary_ref(mrb, message_actions, (mrb_int)index), &kind, &delay) != PICORB_WORKER_OK) {
+      set_error_literal("Queue adapter returned an invalid message action");
+      return PICORB_WORKER_INVALID_RESPONSE;
+    }
+    write_u32(&cursor, kind);
+    write_u32(&cursor, delay);
+  }
+  write_u32(&cursor, has_log ? 1u : 0u);
+  if (has_log) {
+    write_encoded_string(&cursor, mrb_ary_ref(mrb, log, 0));
+    write_encoded_string(&cursor, mrb_ary_ref(mrb, log, 1));
+    write_encoded_string(&cursor, mrb_ary_ref(mrb, log, 2));
+  }
+  response_buffer.ptr[total] = '\0';
+  response_buffer.len = total;
+  return PICORB_WORKER_OK;
 }
 
 static mrb_bool
@@ -1283,6 +1385,7 @@ picorb_worker_close(void)
     worker_mrb = NULL;
   }
   dispatch_proc = mrb_nil_value();
+  queue_dispatch_proc = mrb_nil_value();
   buffer_release(&response_buffer);
   buffer_release(&error_buffer);
 }
@@ -1319,6 +1422,41 @@ picorb_worker_dispatch_v1(const uint8_t *request_frame, size_t request_frame_len
   }
 
   int status = encode_response(mrb, result);
+  mrb_gc_arena_restore(mrb, arena_index);
+  return status;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int
+picorb_worker_queue_v1(const uint8_t *queue_frame, size_t queue_frame_len)
+{
+  buffer_clear(&response_buffer);
+  buffer_clear(&error_buffer);
+
+  mrb_state *mrb = worker_mrb;
+  if (!mrb || !queue_frame) {
+    set_error_literal("runtime is not initialized or Queue input is invalid");
+    return PICORB_WORKER_INVALID_STATE;
+  }
+  if (queue_frame_len < 4 || queue_frame_len > PICORB_WORKER_MAX_REQUEST_FRAME_SIZE ||
+      memcmp(queue_frame, PICORB_WORKER_QUEUE_REQUEST_MAGIC, 4) != 0) {
+    set_error_literal("invalid or unsupported Queue frame");
+    return PICORB_WORKER_INVALID_REQUEST;
+  }
+
+  int arena_index = mrb_gc_arena_save(mrb);
+  mrb_sym queue_frame_global = mrb_intern_lit(mrb, "$picorb_worker_queue_frame");
+  mrb_gv_set(mrb, queue_frame_global, mrb_str_new(mrb, (const char *)queue_frame, queue_frame_len));
+  mrb_bool error = FALSE;
+  mrb_value result = mrb_protect_error(mrb, execute_queue_dispatch_body, NULL, &error);
+  mrb_gv_set(mrb, queue_frame_global, mrb_nil_value());
+  if (error || mrb_exception_p(result)) {
+    set_error_from_exception(mrb, result);
+    mrb_gc_arena_restore(mrb, arena_index);
+    return PICORB_WORKER_DISPATCH_ERROR;
+  }
+
+  int status = encode_queue_response(mrb, result);
   mrb_gc_arena_restore(mrb, arena_index);
   return status;
 }

@@ -460,6 +460,43 @@ module PicoRubyWorker
     end
   end
 
+  module QueueAdapter
+    REQUEST_MAGIC = "PCQ1"
+    ACTION_NONE = 0
+    ACTION_ACK = 1
+    ACTION_RETRY = 2
+
+    def self.register(app)
+      raise RackError, "Queue consumer must respond to call" unless app.respond_to?(:call)
+
+      @app = app
+    end
+
+    def self.unregister
+      @app = nil
+    end
+
+    def self.registered?
+      !@app.nil?
+    end
+
+    def self.dispatch(frame)
+      raise RackError, "Queue consumer is not registered" unless @app
+
+      batch = Cloudflare::Queues::Batch.__decode(frame)
+      env = {
+        "cloudflare.env" => Cloudflare::Environment.new,
+        "cloudflare.batch" => batch,
+      }
+      result = @app.call(env)
+      [batch.__action, batch.messages.map(&:__action), Cloudflare::Queues.__log_record(result)]
+    end
+
+    QUEUE_DISPATCH = -> {
+      QueueAdapter.dispatch($picorb_worker_queue_frame)
+    }
+  end
+
   # mrb-task's synchronous executor currently accepts no arguments, so the C
   # boundary pins the request frame in this private slot during dispatch.
   DISPATCH = -> {
@@ -653,6 +690,149 @@ module Cloudflare
   class Queue < Binding
     def send(message)
       Cloudflare.__queue_send(@binding_name, message)
+    end
+  end
+
+  module QueueConsumer
+    class Base
+      def self.call(env)
+        new.__send__(:dispatch, env)
+      end
+
+      def call(_env)
+        raise NotImplementedError
+      end
+
+      private
+
+      def dispatch(env)
+        @env = env
+        call(env)
+      ensure
+        @env = nil
+      end
+
+      def current_batch
+        @env["cloudflare.batch"]
+      end
+
+      def bindings
+        @env["cloudflare.env"]
+      end
+    end
+  end
+
+  module Queues
+    LOG_LEVELS = [:debug, :info, :warn, :error]
+
+    def self.__log_record(result)
+      return nil unless result.is_a?(Array) && result.size == 3
+
+      level, metadata, message = result
+      return nil unless LOG_LEVELS.include?(level) && metadata.is_a?(Hash) && message.is_a?(String)
+
+      begin
+        metadata_json = JSON.generate(metadata)
+      rescue JSON::JSONError
+        return nil
+      end
+      [level.to_s, metadata_json, message]
+    end
+
+    class Message
+      attr_reader :id, :timestamp, :body, :attempts
+
+      def initialize(id, timestamp, body, attempts)
+        @id = id
+        @timestamp = timestamp
+        @body = body
+        @attempts = attempts
+        @action = [PicoRubyWorker::QueueAdapter::ACTION_NONE, 0]
+      end
+
+      def ack
+        @action = [PicoRubyWorker::QueueAdapter::ACTION_ACK, 0]
+        nil
+      end
+
+      def retry(delay_seconds: nil)
+        @action = [PicoRubyWorker::QueueAdapter::ACTION_RETRY, self.class.__delay(delay_seconds)]
+        nil
+      end
+
+      def __action
+        @action
+      end
+
+      def self.__delay(delay_seconds)
+        return 0 if delay_seconds.nil?
+
+        unless delay_seconds.is_a?(Integer) && delay_seconds > 0 && delay_seconds <= 4_294_967_295
+          raise ArgumentError, "Queue retry delay must be a positive u32 integer"
+        end
+        delay_seconds
+      end
+    end
+
+    class Batch
+      attr_reader :queue, :messages
+
+      def initialize(queue, messages)
+        @queue = queue
+        @messages = messages
+        @action = [PicoRubyWorker::QueueAdapter::ACTION_NONE, 0]
+      end
+
+      def ack_all
+        @action = [PicoRubyWorker::QueueAdapter::ACTION_ACK, 0]
+        nil
+      end
+
+      def retry_all(delay_seconds: nil)
+        @action = [PicoRubyWorker::QueueAdapter::ACTION_RETRY, Message.__delay(delay_seconds)]
+        nil
+      end
+
+      def __action
+        @action
+      end
+
+      def self.__decode(frame)
+        reader = PicoRubyWorker::RackWire::Reader.new(frame)
+        reader.read_magic(PicoRubyWorker::QueueAdapter::REQUEST_MAGIC)
+        queue = reader.read_string
+        raise PicoRubyWorker::RackError, "Queue name is empty" if queue.empty?
+
+        count = reader.read_u32
+        raise PicoRubyWorker::RackError, "Queue batch has too many messages" if count > 1024
+        messages = []
+        index = 0
+        while index < count
+          id = reader.read_string
+          timestamp = Integer(reader.read_string)
+          body = reader.read_string
+          attempts = reader.read_u32
+          raise PicoRubyWorker::RackError, "Queue message ID is empty" if id.empty?
+          raise PicoRubyWorker::RackError, "Queue message timestamp is invalid" if timestamp < 0
+          raise PicoRubyWorker::RackError, "Queue message attempts must be positive" if attempts < 1
+          messages << Message.new(id, timestamp, body, attempts)
+          index += 1
+        end
+        reader.finish!
+        new(queue, messages)
+      rescue ArgumentError
+        raise PicoRubyWorker::RackError, "Queue message timestamp is invalid"
+      end
+    end
+
+    def self.run(app, _options = nil, &block)
+      builder = Rack::Builder.new(app, &block)
+      PicoRubyWorker::QueueAdapter.register(builder.to_app)
+      self
+    end
+
+    def self.shutdown
+      PicoRubyWorker::QueueAdapter.unregister
     end
   end
 

@@ -64,7 +64,8 @@ contract, limits, `Rack::Lint` results, and asynchronous roadmap.
 - asynchronous request buffering in JavaScript and experimental JSPI-backed
   host calls during Ruby dispatch;
 - named Cloudflare KV bindings with binary-safe `get` and `put` (`set`), optional `ttl:`, using JSPI;
-- Cloudflare Queue text-message producers using JSPI;
+- Cloudflare Queue UTF-8 text-message producers and batch consumers, including
+  per-message or batch ack/retry and Rack-style consumer middleware;
 - named Durable Objects storing JSON-compatible POJOs through JSPI;
 - D1 prepared statements, scalar binds, result modes, and transactional batches through JSPI;
 - JSON-compatible Workers AI inference and descriptor-based SSE hijacking through `Cloudflare::AI`;
