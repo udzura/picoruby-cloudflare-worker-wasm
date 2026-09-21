@@ -433,6 +433,12 @@ const durableObjectStore = new Map();
 const runtimeD1Calls = [];
 const runtimeAiCalls = [];
 const runtimeVectorizeCalls = [];
+const runtimeR2Objects = new Map();
+const r2Object = (key, bytes, options = {}) => ({
+  key, version: "version-1", size: bytes.byteLength, etag: "etag-1", httpEtag: '"etag-1"',
+  uploaded: new Date("2026-09-21T00:00:00.000Z"), httpMetadata: options.httpMetadata || {},
+  customMetadata: options.customMetadata || {}, storageClass: "Standard", bytes,
+});
 const runtimeQueueMessages = [];
 const serializedDispatchEvents = [];
 let releaseFirstSerializedDispatch;
@@ -537,6 +543,29 @@ const runtimeWorkerEnv = {
       return await Promise.all(statements.map(statement => statement.run()));
     },
   },
+  BUCKET: {
+    async head(key) {
+      const object = runtimeR2Objects.get(key);
+      return object ? { ...object } : null;
+    },
+    async get(key, options) {
+      const object = runtimeR2Objects.get(key);
+      if (!object) return null;
+      assert.deepEqual(options, { range: { offset: 0, length: 5 } });
+      const bytes = object.bytes;
+      return { ...object, body: new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } }) };
+    },
+    async put(key, value, options) {
+      const object = r2Object(key, new Uint8Array(value), options);
+      runtimeR2Objects.set(key, object);
+      return { ...object };
+    },
+    async delete(keys) { keys.forEach(key => runtimeR2Objects.delete(key)); },
+    async list(options) {
+      assert.deepEqual(options, { prefix: "greeting" });
+      return { objects: [...runtimeR2Objects.values()].map(object => ({ ...object })), truncated: false, delimitedPrefixes: [] };
+    },
+  },
   AI: {
     async run(model, input, options) {
       if (input.stream) return new ReadableStream({
@@ -602,6 +631,7 @@ try {
       BROKEN_KV: "kv",
       OBJECTS: "durable_object",
       DB: "d1",
+      BUCKET: "r2",
       AI: "ai",
       VECTOR_INDEX: "vectorize",
     }),
@@ -878,6 +908,22 @@ const d1AliasResponse = await dispatch(
 );
 assert.equal(await d1AliasResponse.text(), "same");
 
+const r2PutResponse = await dispatch(bindingsRuntime, new Request("https://example.com/r2/put"));
+assert.equal(await r2PutResponse.text(), '["greeting.txt", 5, "text/plain", "test"]');
+
+const r2HeadResponse = await dispatch(bindingsRuntime, new Request("https://example.com/r2/head"));
+assert.equal(await r2HeadResponse.text(), '["greeting.txt", "etag-1", "\\\"etag-1\\\""]');
+
+const r2ListResponse = await dispatch(bindingsRuntime, new Request("https://example.com/r2/list"));
+assert.equal(await r2ListResponse.text(), '[["greeting.txt"], false, nil, []]');
+
+const r2GetResponse = await dispatch(bindingsRuntime, new Request("https://example.com/r2/get"));
+assert.equal(r2GetResponse.headers.get("content-type"), "text/plain");
+assert.equal(await r2GetResponse.text(), "hello");
+
+const r2DeleteResponse = await dispatch(bindingsRuntime, new Request("https://example.com/r2/delete"));
+assert.equal(await r2DeleteResponse.text(), "deleted");
+
 const aiRunResponse = await dispatch(bindingsRuntime, new Request("https://example.com/ai/run"));
 assert.equal(await aiRunResponse.text(), '["answer:Hello", 7]');
 assert.deepEqual(runtimeAiCalls, [[
@@ -968,7 +1014,7 @@ const unsupportedResourceResponse = await dispatch(
   bindingsRuntime,
   new Request("https://example.com/binding/unsupported-resource"),
 );
-assert.match(await unsupportedResourceResponse.text(), /binding-error=undefined Cloudflare binding `BUCKET'/);
+assert.match(await unsupportedResourceResponse.text(), /binding-error=Cloudflare binding `BUCKET' is not a Cloudflare::KV/);
 
 const misconfiguredKvResponse = await dispatch(
   bindingsRuntime,

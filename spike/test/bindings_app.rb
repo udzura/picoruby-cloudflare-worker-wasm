@@ -131,6 +131,24 @@ class BindingsApp
       rescue Cloudflare::HostError => error
         [200, { "content-type" => "text/plain; charset=utf-8" }, ["host-error=#{error.message}"]]
       end
+    when "/r2/put"
+      object = env["cloudflare.env"].BUCKET.put(
+        "greeting.txt", "hello", { httpMetadata: { contentType: "text/plain" }, customMetadata: { source: "test" } }
+      )
+      [200, { "content-type" => "text/plain" }, [[object.key, object.size, object.http_metadata["contentType"], object.custom_metadata["source"]].inspect]]
+    when "/r2/head"
+      object = Cloudflare::R2.from_env(env, "BUCKET").head("greeting.txt")
+      [200, { "content-type" => "text/plain" }, [[object.key, object.etag, object.http_etag].inspect]]
+    when "/r2/list"
+      listed = env["cloudflare.env"].BUCKET.list(prefix: "greeting")
+      [200, { "content-type" => "text/plain" }, [[listed.objects.map(&:key), listed.truncated?, listed.cursor, listed.delimited_prefixes].inspect]]
+    when "/r2/get"
+      object = env["cloudflare.env"].BUCKET.get("greeting.txt", range: { offset: 0, length: 5 })
+      env["cloudflare.hijack"] = object.body
+      [200, { "content-type" => object.http_metadata["contentType"] }, []]
+    when "/r2/delete"
+      env["cloudflare.env"].BUCKET.delete(["greeting.txt"])
+      [200, { "content-type" => "text/plain" }, [env["cloudflare.env"].BUCKET.head("greeting.txt").nil? ? "deleted" : "present"]]
     when "/durable-object/missing"
       value = Cloudflare::DurableObject.from_env(env, "OBJECTS").get("missing")
       [200, { "content-type" => "text/plain" }, [value.nil? ? "missing" : "present"]]

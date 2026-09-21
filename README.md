@@ -17,7 +17,8 @@ Cloudflare bindings are documented in [docs/cloudflare-env.md](docs/cloudflare-e
 [docs/cloudflare-queue.md](docs/cloudflare-queue.md). D1 prepared statements are
 documented in [docs/cloudflare-d1.md](docs/cloudflare-d1.md). Durable Object POJO storage is
 documented in [docs/cloudflare-durable-object.md](docs/cloudflare-durable-object.md).
-Workers AI and Vectorize are documented in [docs/cloudflare-ai.md](docs/cloudflare-ai.md) and
+Workers AI, R2, and Vectorize are documented in [docs/cloudflare-ai.md](docs/cloudflare-ai.md),
+[docs/cloudflare-r2.md](docs/cloudflare-r2.md), and
 [docs/cloudflare-vectorize.md](docs/cloudflare-vectorize.md). Web Crypto bindings are
 documented in [docs/web-crypto.md](docs/web-crypto.md).
 

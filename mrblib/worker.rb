@@ -594,6 +594,8 @@ module Cloudflare
           value = DurableObject.__build(binding_name)
         elsif type == "d1"
           value = D1.__build(binding_name)
+        elsif type == "r2"
+          value = R2.__build(binding_name)
         elsif type == "ai"
           value = AI.__build(binding_name)
         elsif type == "vectorize"
@@ -649,6 +651,112 @@ module Cloudflare
   class Queue < Binding
     def send(message)
       Cloudflare.__queue_send(@binding_name, message)
+    end
+  end
+
+  class R2 < Binding
+    class Object
+      attr_reader :raw, :body
+
+      def initialize(raw, body = nil)
+        unless raw.is_a?(Hash) && raw["key"].is_a?(String)
+          raise ProtocolError, "Cloudflare R2 object must contain a string key"
+        end
+        unless body.nil? || body.is_a?(StreamDescriptor)
+          raise ProtocolError, "Cloudflare R2 object body must be a stream descriptor or nil"
+        end
+        @raw = raw
+        @body = body
+      end
+
+      def key; @raw["key"]; end
+      def version; @raw["version"]; end
+      def size; @raw["size"]; end
+      def etag; @raw["etag"]; end
+      def http_etag; @raw["httpEtag"]; end
+      def uploaded; @raw["uploaded"]; end
+      def http_metadata; @raw["httpMetadata"]; end
+      def custom_metadata; @raw["customMetadata"]; end
+      def range; @raw["range"]; end
+      def storage_class; @raw["storageClass"]; end
+    end
+
+    class Listing
+      attr_reader :objects, :truncated, :cursor, :delimited_prefixes
+
+      def initialize(raw)
+        unless raw.is_a?(Hash) && raw["objects"].is_a?(Array) &&
+            (raw["truncated"] == true || raw["truncated"] == false)
+          raise ProtocolError, "Cloudflare R2 list result is invalid"
+        end
+        @objects = raw["objects"].map { |object| Object.new(object) }
+        @truncated = raw["truncated"]
+        @cursor = raw["cursor"]
+        @delimited_prefixes = raw["delimitedPrefixes"] || []
+      end
+
+      def truncated?; @truncated; end
+    end
+
+    def head(key)
+      __object_request("head", [__key(key)])
+    end
+
+    def get(key, options = {})
+      raw = __request("get", [__key(key), __options(options)])
+      return nil if raw.nil?
+
+      stream_id = raw["streamId"]
+      body = stream_id.nil? ? nil : StreamDescriptor.send(:new, stream_id)
+      Object.new(raw["object"], body)
+    end
+
+    def put(key, value, options = {})
+      raise ArgumentError, "Cloudflare R2 value must be a String" unless value.is_a?(String)
+
+      __object_request("put", [__key(key), value, __options(options)])
+    end
+
+    def delete(keys)
+      keys = [keys] if keys.is_a?(String)
+      unless keys.is_a?(Array) && !keys.empty? && keys.all? { |key| key.is_a?(String) }
+        raise ArgumentError, "Cloudflare R2 keys must be a non-empty String or Array of Strings"
+      end
+      Cloudflare.__host_call("r2.delete", @binding_name, [JSON.generate(keys)])
+      nil
+    rescue JSON::JSONError => error
+      raise ArgumentError, "invalid Cloudflare R2 keys: #{error.message}"
+    end
+
+    def list(options = {})
+      Listing.new(__request("list", [__options(options)]))
+    end
+
+    private
+
+    def __key(key)
+      raise ArgumentError, "Cloudflare R2 key must be a String" unless key.is_a?(String)
+      key
+    end
+
+    def __options(options)
+      raise ArgumentError, "Cloudflare R2 options must be a Hash" unless options.is_a?(Hash)
+      JSON.generate(options)
+    rescue JSON::JSONError => error
+      raise ArgumentError, "invalid Cloudflare R2 options: #{error.message}"
+    end
+
+    def __object_request(operation, arguments)
+      raw = __request(operation, arguments)
+      raw.nil? ? nil : Object.new(raw)
+    end
+
+    def __request(operation, arguments)
+      response = Cloudflare.__host_call("r2.#{operation}", @binding_name, arguments)
+      return nil if response.nil?
+      JSON.parse(response)
+    rescue JSON::JSONError => error
+      raise ProtocolError, "invalid Cloudflare R2 response JSON: #{error.message}"
     end
   end
 

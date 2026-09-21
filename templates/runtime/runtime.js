@@ -654,6 +654,97 @@ function getQueue(env, bindingTypes, bindingName) {
   return queue;
 }
 
+function getR2Bucket(env, bindingTypes, bindingName) {
+  if (typeof bindingName !== "string" || bindingName.length === 0) {
+    throw new HostArgumentError("Cloudflare R2 binding name must be a non-empty string");
+  }
+  requireBindingType(bindingTypes, bindingName, "r2");
+  const bucket = env[bindingName];
+  if (!bucket || typeof bucket.head !== "function" || typeof bucket.get !== "function" ||
+      typeof bucket.put !== "function" || typeof bucket.delete !== "function" ||
+      typeof bucket.list !== "function") {
+    throw new HostBindingError(`Cloudflare R2 binding ${bindingName} is not configured`);
+  }
+  return bucket;
+}
+
+function decodeR2Key(key) {
+  try {
+    return strictDecoder.decode(key);
+  } catch {
+    throw new HostArgumentError("Cloudflare R2 key must be valid UTF-8");
+  }
+}
+
+function parseR2Options(json, operation) {
+  let options;
+  try {
+    options = JSON.parse(json);
+  } catch {
+    throw new HostProtocolError(`Cloudflare R2 ${operation} options contain invalid JSON`);
+  }
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new HostArgumentError(`Cloudflare R2 ${operation} options must be a JSON object`);
+  }
+  validateJsonValue(options, `Cloudflare R2 ${operation} options`);
+  return options;
+}
+
+function serializeR2Object(object) {
+  if (!object || typeof object !== "object" || typeof object.key !== "string") {
+    throw new HostProtocolError("Cloudflare R2 returned an invalid object");
+  }
+  const result = { key: object.key };
+  for (const key of ["version", "size", "etag", "httpEtag", "httpMetadata", "customMetadata", "range", "storageClass"]) {
+    if (object[key] !== undefined) result[key] = object[key];
+  }
+  if (object.uploaded !== undefined) result.uploaded = object.uploaded instanceof Date
+    ? object.uploaded.toISOString() : object.uploaded;
+  validateJsonValue(result, "Cloudflare R2 object");
+  return result;
+}
+
+async function executeR2(env, bindingTypes, bindingName, operation, args, streams) {
+  return await captureHostCall(async () => {
+    const bucket = getR2Bucket(env, bindingTypes, bindingName);
+    if (operation === "head") {
+      const object = await bucket.head(decodeR2Key(args[0]));
+      return object === null ? hostMissing() : hostOk(utf8(JSON.stringify(serializeR2Object(object))));
+    }
+    if (operation === "get") {
+      const object = await bucket.get(decodeR2Key(args[0]), parseR2Options(decodeHostCallText(args[1]), "get"));
+      if (object === null) return hostMissing();
+      const result = { object: serializeR2Object(object) };
+      if (object.body !== undefined) {
+        const stream = streams.register(object.body);
+        result.streamId = new DataView(stream.payload.buffer, stream.payload.byteOffset, 4).getUint32(0, true);
+      }
+      return hostOk(utf8(JSON.stringify(result)));
+    }
+    if (operation === "put") {
+      const object = await bucket.put(decodeR2Key(args[0]), args[1], parseR2Options(decodeHostCallText(args[2]), "put"));
+      return object === null ? hostMissing() : hostOk(utf8(JSON.stringify(serializeR2Object(object))));
+    }
+    if (operation === "delete") {
+      let keys;
+      try { keys = JSON.parse(decodeHostCallText(args[0])); } catch { throw new HostProtocolError("Cloudflare R2 delete keys contain invalid JSON"); }
+      if (!Array.isArray(keys) || keys.length === 0 || keys.some(key => typeof key !== "string")) {
+        throw new HostArgumentError("Cloudflare R2 delete keys must be a non-empty Array of strings");
+      }
+      await bucket.delete(keys);
+      return hostOk(new Uint8Array());
+    }
+    const listed = await bucket.list(parseR2Options(decodeHostCallText(args[0]), "list"));
+    if (!listed || !Array.isArray(listed.objects) || typeof listed.truncated !== "boolean") {
+      throw new HostProtocolError("Cloudflare R2 returned an invalid list result");
+    }
+    return hostOk(utf8(JSON.stringify({
+      objects: listed.objects.map(serializeR2Object), truncated: listed.truncated,
+      cursor: listed.cursor, delimitedPrefixes: listed.delimitedPrefixes || [],
+    })));
+  });
+}
+
 function isJsonValue(value) {
   if (value === null || typeof value === "number" || typeof value === "boolean") return true;
   if (Array.isArray(value)) return true;
@@ -818,6 +909,11 @@ export function createCloudflareBindings(env, bindingTypes) {
     "d1.execute": ([request], bindingName) => operationBindings.picorbWorkerD1Bridge(
       bindingName, decodeHostCallText(request),
     ),
+    "r2.head": ([key], bindingName) => executeR2(env, types, bindingName, "head", [key], streams),
+    "r2.get": ([key, options], bindingName) => executeR2(env, types, bindingName, "get", [key, options], streams),
+    "r2.put": ([key, value, options], bindingName) => executeR2(env, types, bindingName, "put", [key, value, options], streams),
+    "r2.delete": ([keys], bindingName) => executeR2(env, types, bindingName, "delete", [keys], streams),
+    "r2.list": ([options], bindingName) => executeR2(env, types, bindingName, "list", [options], streams),
     "ai.run": ([model, input, options], bindingName) => executeAiRun(
       env, types, bindingName, decodeHostCallText(model), decodeHostCallText(input), decodeHostCallText(options), streams,
     ),
@@ -856,6 +952,11 @@ export function createCloudflareBindings(env, bindingTypes) {
     "durable_object.get": 1,
     "durable_object.put": 2,
     "d1.execute": 1,
+    "r2.head": 1,
+    "r2.get": 2,
+    "r2.put": 3,
+    "r2.delete": 1,
+    "r2.list": 1,
     "ai.run": 3,
     "vectorize.query": 1,
     "vectorize.query_by_id": 1,
@@ -918,7 +1019,7 @@ function normalizeBindingTypes(bindingTypes) {
       throw new TypeError("Cloudflare binding type contains an invalid name");
     }
     if (type !== "kv" && type !== "queue" && type !== "durable_object" &&
-        type !== "d1" && type !== "ai" && type !== "vectorize") {
+        type !== "d1" && type !== "r2" && type !== "ai" && type !== "vectorize") {
       throw new TypeError(`Unsupported Cloudflare binding type for ${name}: ${type}`);
     }
     normalized[name] = type;

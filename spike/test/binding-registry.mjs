@@ -11,6 +11,7 @@ const source = `{
   "queues": { "producers": [{ "binding": "EVENTS_QUEUE", "queue": "events" }] },
   "durable_objects": { "bindings": [{ "name": "OBJECTS", "class_name": "PicoRubyDurableObject" }] },
   "d1_databases": [{ "binding": "DB", "database_name": "test", "database_id": "test" }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "test" }],
   "ai": { "binding": "AI" },
   "vectorize": [{ "binding": "VECTOR_INDEX", "index_name": "test" }],
   "vars": { "IGNORED_SCALAR": "value" },
@@ -23,6 +24,7 @@ const source = `{
 
 assert.deepEqual(parseCloudflareBindingTypes(source), [
   ["AI", "ai"],
+  ["BUCKET", "r2"],
   ["CACHE_KV", "kv"],
   ["DB", "d1"],
   ["EVENTS_QUEUE", "queue"],

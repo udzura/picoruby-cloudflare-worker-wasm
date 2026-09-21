@@ -5,6 +5,7 @@ const RESOURCE_BINDINGS = [
   { section: "queues", subsection: "producers", nameField: "binding", type: "queue", singleton: false },
   { section: "durable_objects", subsection: "bindings", nameField: "name", type: "durable_object", singleton: false },
   { section: "d1_databases", subsection: null, nameField: "binding", type: "d1", singleton: false },
+  { section: "r2_buckets", subsection: null, nameField: "binding", type: "r2", singleton: false },
   { section: "ai", subsection: null, nameField: "binding", type: "ai", singleton: true },
   { section: "vectorize", subsection: null, nameField: "binding", type: "vectorize", singleton: false },
 ];
