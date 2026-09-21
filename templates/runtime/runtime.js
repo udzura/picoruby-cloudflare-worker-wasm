@@ -12,8 +12,8 @@ import {
   utf8,
 } from "./host-bridge.js";
 
-const ABI_VERSION = 3;
-const REQUEST_MAGIC = new Uint8Array([0x50, 0x52, 0x51, 0x31]); // PRQ1
+const ABI_VERSION = 4;
+const REQUEST_MAGIC = new Uint8Array([0x50, 0x52, 0x51, 0x32]); // PRQ2
 const RESPONSE_MAGIC = new Uint8Array([0x50, 0x52, 0x52, 0x32]); // PRR2
 const DEFAULT_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 const encoder = new TextEncoder();
@@ -37,23 +37,65 @@ export class HostStreamRegistry {
     }
     if (this.nextId > 0xffffffff) throw new HostProtocolError("Host stream handles exhausted");
     const id = this.nextId++;
-    this.streams.set(id, stream);
+    this.streams.set(id, { stream, reader: null, pending: null, eof: false });
     const payload = new Uint8Array(4);
     new DataView(payload.buffer).setUint32(0, id, true);
     return { kind: HostResultKind.hostStream, payload };
   }
 
   take(id) {
-    const stream = this.streams.get(id);
-    if (!stream) throw new HostProtocolError("Unknown or already transferred host stream handle");
+    const entry = this.streams.get(id);
+    if (!entry || entry.reader || entry.eof) throw new HostProtocolError("Unknown or already consumed host stream handle");
     this.streams.delete(id);
-    return stream;
+    return entry.stream;
+  }
+
+  registerInput(stream) {
+    if (!(stream instanceof ReadableStream) || stream.locked) {
+      throw new HostProtocolError("Cloudflare request body must be an unlocked ReadableStream");
+    }
+    if (this.nextId > 0xffffffff) throw new HostProtocolError("Host stream handles exhausted");
+    const id = this.nextId++;
+    this.streams.set(id, { stream, reader: null, pending: null, eof: false });
+    return id;
+  }
+
+  async readInput(id, length) {
+    const entry = this.streams.get(id);
+    if (!entry) throw new HostProtocolError("Unknown or transferred input stream handle");
+    if (!Number.isSafeInteger(length) || length < 1) throw new HostArgumentError("Cloudflare input read length must be positive");
+    if (entry.eof) return null;
+    const reader = entry.reader ||= entry.stream.getReader();
+    const chunks = [];
+    let total = 0;
+    while (total < length) {
+      let value = entry.pending;
+      entry.pending = null;
+      if (!value) {
+        const next = await reader.read();
+        if (next.done) {
+          reader.releaseLock();
+          entry.eof = true;
+          break;
+        }
+        value = next.value;
+      }
+      const chunk = value.subarray(0, length - total);
+      chunks.push(chunk);
+      total += chunk.byteLength;
+      if (chunk.byteLength !== value.byteLength) entry.pending = value.subarray(chunk.byteLength);
+    }
+    if (total === 0) return null;
+    const result = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
+    return result;
   }
 
   discard() {
-    for (const stream of this.streams.values()) {
+    for (const { stream, reader } of this.streams.values()) {
       // Do not delay the response on an upstream cancellation promise.
-      stream.cancel("Host stream was not returned").catch(() => {});
+      (reader ? reader.cancel("Host stream was not returned") : stream.cancel("Host stream was not returned")).catch(() => {});
     }
     this.streams.clear();
   }
@@ -721,8 +763,12 @@ async function executeR2(env, bindingTypes, bindingName, operation, args, stream
       }
       return hostOk(utf8(JSON.stringify(result)));
     }
-    if (operation === "put") {
-      const object = await bucket.put(decodeR2Key(args[0]), args[1], parseR2Options(decodeHostCallText(args[2]), "put"));
+    if (operation === "put" || operation === "put_input") {
+      const value = operation === "put"
+        ? args[1]
+        : streams.take(Number(decodeHostCallText(args[1])));
+      const optionsArg = operation === "put" ? args[2] : args[2];
+      const object = await bucket.put(decodeR2Key(args[0]), value, parseR2Options(decodeHostCallText(optionsArg), "put"));
       return object === null ? hostMissing() : hostOk(utf8(JSON.stringify(serializeR2Object(object))));
     }
     if (operation === "delete") {
@@ -909,9 +955,16 @@ export function createCloudflareBindings(env, bindingTypes) {
     "d1.execute": ([request], bindingName) => operationBindings.picorbWorkerD1Bridge(
       bindingName, decodeHostCallText(request),
     ),
+    "input.read": async ([id, length], bindingName) => captureHostCall(async () => {
+      if (bindingName !== "") return protocolErrorFrame("Cloudflare input does not use a binding");
+      const streamId = Number(decodeHostCallText(id));
+      const bytes = await streams.readInput(streamId, Number(decodeHostCallText(length)));
+      return bytes === null ? hostMissing() : hostOk(bytes);
+    }),
     "r2.head": ([key], bindingName) => executeR2(env, types, bindingName, "head", [key], streams),
     "r2.get": ([key, options], bindingName) => executeR2(env, types, bindingName, "get", [key, options], streams),
     "r2.put": ([key, value, options], bindingName) => executeR2(env, types, bindingName, "put", [key, value, options], streams),
+    "r2.put_input": ([key, inputId, options], bindingName) => executeR2(env, types, bindingName, "put_input", [key, inputId, options], streams),
     "r2.delete": ([keys], bindingName) => executeR2(env, types, bindingName, "delete", [keys], streams),
     "r2.list": ([options], bindingName) => executeR2(env, types, bindingName, "list", [options], streams),
     "ai.run": ([model, input, options], bindingName) => executeAiRun(
@@ -952,9 +1005,11 @@ export function createCloudflareBindings(env, bindingTypes) {
     "durable_object.get": 1,
     "durable_object.put": 2,
     "d1.execute": 1,
+    "input.read": 2,
     "r2.head": 1,
     "r2.get": 2,
     "r2.put": 3,
+    "r2.put_input": 3,
     "r2.delete": 1,
     "r2.list": 1,
     "ai.run": 3,
@@ -1168,14 +1223,15 @@ async function readRequestBody(request, limit) {
   return body;
 }
 
-export async function encodeRackRequest(request, options = {}) {
-  const maxRequestBodyBytes = options.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES;
+export async function encodeRackRequest(request, options = {}, streams) {
   const url = new URL(request.url);
   const scheme = url.protocol.slice(0, -1);
   const port = url.port || (scheme === "https" ? "443" : "80");
   const protocol = request.cf?.httpProtocol || "HTTP/1.1";
   const headers = Array.from(request.headers.entries());
-  const body = await readRequestBody(request, maxRequestBodyBytes);
+  if (!streams) throw new Error("Host stream registry is unavailable");
+  const body = request.body || new ReadableStream({ start(controller) { controller.close(); } });
+  const inputId = streams.registerInput(body);
 
   const writer = new FrameWriter();
   writer.appendBytes(REQUEST_MAGIC);
@@ -1192,7 +1248,7 @@ export async function encodeRackRequest(request, options = {}) {
     writer.appendString(name);
     writer.appendString(value);
   }
-  writer.appendLengthPrefixedBytes(body);
+  writer.appendU32(inputId);
   return writer.finish();
 }
 
@@ -1246,7 +1302,23 @@ export async function createRuntime(createPicoRuby, wasmModule, appBytecode, run
   if (context) {
     bindings.picorbWorkerHostCallBridge = context.create().picorbWorkerHostCallBridge;
   }
-  const streams = hostContexts.get(bindings.picorbWorkerHostCallBridge)?.streams;
+  const streams = hostContexts.get(bindings.picorbWorkerHostCallBridge)?.streams ?? new HostStreamRegistry();
+  if (!context) {
+    bindings.picorbWorkerHostCallBridge = async frame => {
+      try {
+        const call = decodeHostCall(frame);
+        if (call.operation !== "input.read" || call.bindingName !== "" || call.args.length !== 2) {
+          return protocolErrorFrame("Cloudflare host operation is unavailable");
+        }
+        return await captureHostCall(async () => {
+          const bytes = await streams.readInput(Number(decodeHostCallText(call.args[0])), Number(decodeHostCallText(call.args[1])));
+          return bytes === null ? hostMissing() : hostOk(bytes);
+        });
+      } catch (error) {
+        return protocolErrorFrame(error instanceof Error ? error.message : String(error));
+      }
+    };
+  }
   const module = await createPicoRuby({
     ...defaultRuntimeBindings,
     ...bindings,
@@ -1331,7 +1403,8 @@ export function dispatch(module, request, requestOptions = {}) {
 }
 
 async function dispatchOnce(module, request, requestOptions) {
-  const frame = await encodeRackRequest(request, requestOptions);
+  const streams = runtimeStreams.get(module);
+  const frame = await encodeRackRequest(request, requestOptions, streams);
   const pointer = copyToWasm(module, frame);
   try {
     const status = await module.ccall(

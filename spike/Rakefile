@@ -117,6 +117,7 @@ task build: :templates do
   compile_kv_test_app!
   compile_bindings_test_app!
   compile_crypto_test_app!
+  compile_ruby_app!(File.join(SPIKE_ROOT, "test", "input_stream_app.rb"), File.join(DIST_DIR, "input_stream_app.bin"))
   compile_ruby_app!(File.join(SPIKE_ROOT, "test", "stream_app.rb"), File.join(DIST_DIR, "stream_app.bin"))
   stage_runtime!
 end

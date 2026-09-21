@@ -3,7 +3,7 @@ module PicoRubyWorker
   end
 
   module RackWire
-    REQUEST_MAGIC = "PRQ1"
+    REQUEST_MAGIC = "PRQ2"
     REQUEST_FIELD_COUNT = 8
     MAX_HEADER_COUNT = 256
 
@@ -72,9 +72,9 @@ module PicoRubyWorker
         index += 1
       end
 
-      body = reader.read_string
+      input_id = reader.read_u32
       reader.finish!
-      [fields, headers, body]
+      [fields, headers, input_id]
     end
   end
 
@@ -86,7 +86,7 @@ module PicoRubyWorker
     end
 
     def read(length = nil, buffer = nil)
-      raise RackError, "rack.input is closed" if @closed
+      raise PicoRubyWorker::RackError, "rack.input is closed" if @closed
       unless length.nil? || length.is_a?(Integer)
         raise ArgumentError, "rack.input length must be an Integer or nil"
       end
@@ -245,7 +245,7 @@ module PicoRubyWorker
       ENV.__cloudflare_reset
       fields = request[0]
       headers = request[1]
-      body = request[2]
+      input_id = request[2]
       method = fields[0]
       scheme = fields[1]
       server_name = fields[2]
@@ -269,10 +269,11 @@ module PicoRubyWorker
         "SERVER_PROTOCOL" => protocol,
         "HTTP_HOST" => host,
         "rack.url_scheme" => scheme,
-        "rack.input" => RackInput.new(body),
+        "rack.input" => Cloudflare::InputStream.send(:new, input_id),
         "rack.errors" => RackErrors.new,
         "rack.response_finished" => [],
         "cloudflare.env" => Cloudflare::Environment.new,
+        "cloudflare.input" => nil,
         "cloudflare.hijack" => nil,
       }
 
@@ -282,6 +283,7 @@ module PicoRubyWorker
         add_header(env, headers[index], headers[index + 1])
         index += 2
       end
+      env["cloudflare.input"] = env["rack.input"]
       env
     end
 
@@ -712,6 +714,9 @@ module Cloudflare
     end
 
     def put(key, value, options = {})
+      if value.is_a?(InputStream)
+        return __object_request("put_input", [__key(key), value.__id.to_s, __options(options)])
+      end
       raise ArgumentError, "Cloudflare R2 value must be a String" unless value.is_a?(String)
 
       __object_request("put", [__key(key), value, __options(options)])
@@ -1032,6 +1037,60 @@ module Cloudflare
         raise ArgumentError, "invalid stream descriptor"
       end
       @id = id
+    end
+
+    class << self
+      private :new
+    end
+  end
+
+  class InputStream
+    DEFAULT_READ_SIZE = 16 * 1024
+
+    def initialize(id)
+      unless id.is_a?(Integer) && id > 0 && id <= 0xffffffff
+        raise ArgumentError, "invalid input stream descriptor"
+      end
+      @id = id
+      @closed = false
+      @eof = false
+    end
+
+    def read(length = nil, buffer = nil)
+      raise PicoRubyWorker::RackError, "rack.input is closed" if @closed
+      unless length.nil? || length.is_a?(Integer)
+        raise ArgumentError, "rack.input length must be an Integer or nil"
+      end
+      raise ArgumentError, "negative length" if length && length < 0
+      unless buffer.nil? || buffer.is_a?(String)
+        raise ArgumentError, "rack.input buffer must be a String"
+      end
+      return "" if length == 0
+
+      result = ""
+      target = length
+      while !@eof && (target.nil? || result.bytesize < target)
+        size = target ? target - result.bytesize : DEFAULT_READ_SIZE
+        chunk = Cloudflare.__host_call("input.read", "", [@id.to_s, size.to_s])
+        if chunk.nil?
+          @eof = true
+          break
+        end
+        result << chunk
+      end
+      result = nil if result.empty? && target && @eof
+      return result unless buffer && result
+      buffer.replace(result)
+      buffer
+    end
+
+    def close
+      @closed = true
+      nil
+    end
+
+    def __id
+      @id
     end
 
     class << self
