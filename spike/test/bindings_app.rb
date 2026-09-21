@@ -136,6 +136,11 @@ class BindingsApp
         "greeting.txt", "hello", { httpMetadata: { contentType: "text/plain" }, customMetadata: { source: "test" } }
       )
       [200, { "content-type" => "text/plain" }, [[object.key, object.size, object.http_metadata["contentType"], object.custom_metadata["source"]].inspect]]
+    when "/r2/put_pipelined"
+      object = env["cloudflare.env"].BUCKET.put(
+        "pipelined.bin", env["rack.input"], { httpMetadata: { contentType: env["CONTENT_TYPE"] } }
+      )
+      [200, { "content-type" => "text/plain" }, [[object.key, object.size, object.http_metadata["contentType"]].inspect]]
     when "/r2/head"
       object = Cloudflare::R2.from_env(env, "BUCKET").head("greeting.txt")
       [200, { "content-type" => "text/plain" }, [[object.key, object.etag, object.http_etag].inspect]]

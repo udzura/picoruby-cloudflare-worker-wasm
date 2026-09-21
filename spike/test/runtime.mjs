@@ -434,6 +434,26 @@ const runtimeD1Calls = [];
 const runtimeAiCalls = [];
 const runtimeVectorizeCalls = [];
 const runtimeR2Objects = new Map();
+async function r2Bytes(value) {
+  if (!(value instanceof ReadableStream)) return new Uint8Array(value);
+
+  const reader = value.getReader();
+  const chunks = [];
+  let length = 0;
+  while (true) {
+    const { done, value: chunk } = await reader.read();
+    if (done) break;
+    chunks.push(chunk);
+    length += chunk.byteLength;
+  }
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
 const r2Object = (key, bytes, options = {}) => ({
   key, version: "version-1", size: bytes.byteLength, etag: "etag-1", httpEtag: '"etag-1"',
   uploaded: new Date("2026-09-21T00:00:00.000Z"), httpMetadata: options.httpMetadata || {},
@@ -556,7 +576,7 @@ const runtimeWorkerEnv = {
       return { ...object, body: new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } }) };
     },
     async put(key, value, options) {
-      const object = r2Object(key, new Uint8Array(value), options);
+      const object = r2Object(key, await r2Bytes(value), options);
       runtimeR2Objects.set(key, object);
       return { ...object };
     },
@@ -910,6 +930,18 @@ assert.equal(await d1AliasResponse.text(), "same");
 
 const r2PutResponse = await dispatch(bindingsRuntime, new Request("https://example.com/r2/put"));
 assert.equal(await r2PutResponse.text(), '["greeting.txt", 5, "text/plain", "test"]');
+
+const r2PipelinedResponse = await dispatch(
+  bindingsRuntime,
+  new Request("https://example.com/r2/put_pipelined", {
+    method: "POST",
+    headers: { "content-type": "application/octet-stream" },
+    body: new Uint8Array([0, 1, 2, 255]),
+    duplex: "half",
+  }),
+);
+assert.equal(await r2PipelinedResponse.text(), '["pipelined.bin", 4, "application/octet-stream"]');
+assert.deepEqual(runtimeR2Objects.get("pipelined.bin").bytes, new Uint8Array([0, 1, 2, 255]));
 
 const r2HeadResponse = await dispatch(bindingsRuntime, new Request("https://example.com/r2/head"));
 assert.equal(await r2HeadResponse.text(), '["greeting.txt", "etag-1", "\\\"etag-1\\\""]');
