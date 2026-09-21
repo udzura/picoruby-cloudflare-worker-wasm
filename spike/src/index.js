@@ -4,6 +4,7 @@ import appBytecode from "../dist/app.bin";
 import { cloudflareBindingTypes } from "./generated/cloudflare-bindings.js";
 import {
   createCloudflareBindings,
+  handleQueue,
   handleRequest,
   RequestBodyTooLargeError,
 } from "./runtime.js";
@@ -26,6 +27,20 @@ export default {
         return new Response("Request body too large", { status: 413 });
       }
       return new Response("PicoRuby Worker runtime error", { status: 500 });
+    }
+  },
+  async queue(batch, env) {
+    try {
+      await handleQueue(
+        createPicoRuby,
+        picoRubyWasm,
+        appBytecode,
+        batch,
+        createCloudflareBindings(env, cloudflareBindingTypes),
+      );
+    } catch (error) {
+      console.error(error);
+      throw error;
     }
   },
 };

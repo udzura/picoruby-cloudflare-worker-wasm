@@ -23,6 +23,7 @@ APP_SOURCE = File.expand_path(ENV.fetch("PICORUBY_APP", "lib/app.rb"), SPIKE_ROO
 KV_TEST_APP_SOURCE = File.join(SPIKE_ROOT, "test", "kv_app.rb")
 BINDINGS_TEST_APP_SOURCE = File.join(SPIKE_ROOT, "test", "bindings_app.rb")
 CRYPTO_TEST_APP_SOURCE = File.join(SPIKE_ROOT, "test", "crypto_app.rb")
+QUEUE_TEST_APP_SOURCE = File.join(SPIKE_ROOT, "test", "queue_app.rb")
 WORKER_WASM_REVISION = ENV.fetch("PICORUBY_WORKER_WASM_REV", "939022a7d2c77acb3b2d456c8ebbcb54a17a9aca")
 
 abort "PicoRuby Rakefile was not found: #{PICORUBY_RAKEFILE}" unless File.file?(PICORUBY_RAKEFILE)
@@ -119,6 +120,7 @@ task build: :templates do
   compile_crypto_test_app!
   compile_ruby_app!(File.join(SPIKE_ROOT, "test", "input_stream_app.rb"), File.join(DIST_DIR, "input_stream_app.bin"))
   compile_ruby_app!(File.join(SPIKE_ROOT, "test", "stream_app.rb"), File.join(DIST_DIR, "stream_app.bin"))
+  compile_ruby_app!(QUEUE_TEST_APP_SOURCE, File.join(DIST_DIR, "queue_app.bin"))
   stage_runtime!
 end
 

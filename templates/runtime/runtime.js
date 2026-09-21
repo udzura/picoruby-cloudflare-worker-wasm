@@ -12,10 +12,14 @@ import {
   utf8,
 } from "./host-bridge.js";
 
-const ABI_VERSION = 4;
+const ABI_VERSION = 6;
 const REQUEST_MAGIC = new Uint8Array([0x50, 0x52, 0x51, 0x32]); // PRQ2
 const RESPONSE_MAGIC = new Uint8Array([0x50, 0x52, 0x52, 0x32]); // PRR2
+const QUEUE_REQUEST_MAGIC = new Uint8Array([0x50, 0x43, 0x51, 0x31]); // PCQ1
+const QUEUE_RESPONSE_MAGIC = new Uint8Array([0x50, 0x51, 0x52, 0x31]); // PQR1
 const DEFAULT_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
+const MAX_QUEUE_FRAME_BYTES = 2 * 1024 * 1024;
+const MAX_QUEUE_MESSAGE_BYTES = 128 * 1024;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const strictDecoder = new TextDecoder("utf-8", { fatal: true });
@@ -1281,6 +1285,104 @@ export async function encodeRackRequest(request, options = {}, streams) {
   return writer.finish();
 }
 
+export function encodeQueueBatch(batch) {
+  if (!batch || typeof batch !== "object" || typeof batch.queue !== "string" || batch.queue.length === 0 ||
+      !Array.isArray(batch.messages) || batch.messages.length > 1024 ||
+      typeof batch.ackAll !== "function" || typeof batch.retryAll !== "function") {
+    throw new TypeError("Cloudflare Queue batch must have a name and at most 1024 messages");
+  }
+  const writer = new FrameWriter();
+  writer.appendBytes(QUEUE_REQUEST_MAGIC);
+  writer.appendString(batch.queue);
+  writer.appendU32(batch.messages.length);
+  for (const message of batch.messages) {
+    if (!message || typeof message.id !== "string" || message.id.length === 0 || typeof message.body !== "string" ||
+        !Number.isSafeInteger(message.attempts) || message.attempts < 1 || !(message.timestamp instanceof Date) ||
+        !Number.isSafeInteger(message.timestamp.getTime()) || message.timestamp.getTime() < 0 ||
+        typeof message.ack !== "function" || typeof message.retry !== "function") {
+      throw new TypeError("Cloudflare Queue message must have a string ID and body, Date timestamp, and positive attempts");
+    }
+    if (encoder.encode(message.body).byteLength > MAX_QUEUE_MESSAGE_BYTES) {
+      throw new RangeError(`Cloudflare Queue message exceeds ${MAX_QUEUE_MESSAGE_BYTES} bytes`);
+    }
+    writer.appendString(message.id);
+    writer.appendString(String(message.timestamp.getTime()));
+    writer.appendString(message.body);
+    writer.appendU32(message.attempts);
+  }
+  if (writer.length > MAX_QUEUE_FRAME_BYTES) {
+    throw new RangeError(`Cloudflare Queue batch exceeds ${MAX_QUEUE_FRAME_BYTES} bytes`);
+  }
+  return writer.finish();
+}
+
+export function decodeQueueResponse(frame, messageCount) {
+  const reader = new FrameReader(frame);
+  const magic = reader.readBytes(QUEUE_RESPONSE_MAGIC.byteLength);
+  for (let index = 0; index < QUEUE_RESPONSE_MAGIC.byteLength; index += 1) {
+    if (magic[index] !== QUEUE_RESPONSE_MAGIC[index]) {
+      throw new Error("Unsupported PicoRuby Queue response frame");
+    }
+  }
+  const batch = readQueueAction(reader);
+  const count = reader.readU32();
+  if (count !== messageCount) throw new Error("PicoRuby Queue response has an unexpected message count");
+  const messages = [];
+  for (let index = 0; index < count; index += 1) messages.push(readQueueAction(reader));
+  const hasLog = reader.readU32();
+  if (hasLog !== 0 && hasLog !== 1) throw new Error("PicoRuby Queue response has an invalid log flag");
+  const log = hasLog === 0 ? null : readQueueLog(reader);
+  reader.finish();
+  return { batch, messages, log };
+}
+
+function readQueueAction(reader) {
+  const kind = reader.readU32();
+  const delaySeconds = reader.readU32();
+  if (kind > 2 || (kind !== 2 && delaySeconds !== 0)) {
+    throw new Error("PicoRuby Queue response has an invalid action");
+  }
+  return { kind, delaySeconds };
+}
+
+function applyQueueActions(batch, actions) {
+  if (actions.batch.kind === 1) batch.ackAll();
+  if (actions.batch.kind === 2) batch.retryAll(queueRetryOptions(actions.batch.delaySeconds));
+  for (let index = 0; index < actions.messages.length; index += 1) {
+    const action = actions.messages[index];
+    const message = batch.messages[index];
+    if (action.kind === 1) message.ack();
+    if (action.kind === 2) message.retry(queueRetryOptions(action.delaySeconds));
+  }
+}
+
+function queueRetryOptions(delaySeconds) {
+  return delaySeconds === 0 ? undefined : { delaySeconds };
+}
+
+function readQueueLog(reader) {
+  const level = reader.readString();
+  const metadataJson = reader.readString();
+  const message = reader.readString();
+  if (level !== "debug" && level !== "info" && level !== "warn" && level !== "error") {
+    throw new Error("PicoRuby Queue response has an invalid log level");
+  }
+  let metadata;
+  try {
+    metadata = JSON.parse(metadataJson);
+  } catch {
+    throw new Error("PicoRuby Queue response has invalid log metadata");
+  }
+  if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) {
+    throw new Error("PicoRuby Queue response log metadata must be an object");
+  }
+  return { level, metadata, message };
+}
+
+function emitQueueLog(log) {
+  if (log) console[log.level](log.message, log.metadata);
+}
+
 export function decodeRackResponse(frame, requestMethod = "GET", streams, signal) {
   const reader = new FrameReader(frame);
   const magic = reader.readBytes(RESPONSE_MAGIC.byteLength);
@@ -1419,6 +1521,22 @@ export async function handleRequest(
   }
 }
 
+export async function handleQueue(
+  createPicoRuby,
+  wasmModule,
+  appBytecode,
+  batch,
+  ...bindingSets
+) {
+  const bindings = mergeBindings(...bindingSets);
+  const module = await createRuntime(createPicoRuby, wasmModule, appBytecode, bindings);
+  try {
+    await dispatchQueue(module, batch);
+  } finally {
+    await closeRuntime(module);
+  }
+}
+
 export function dispatch(module, request, requestOptions = {}) {
   const previousDispatch = dispatchQueues.get(module) ?? Promise.resolve();
   const currentDispatch = previousDispatch
@@ -1457,6 +1575,34 @@ async function dispatchOnce(module, request, requestOptions) {
     return decodeRackResponse(responseFrame, request.method, runtimeStreams.get(module), request.signal);
   } finally {
     runtimeStreams.get(module)?.discard();
+    module._free(pointer);
+  }
+}
+
+export async function dispatchQueue(module, batch) {
+  const frame = encodeQueueBatch(batch);
+  const pointer = copyToWasm(module, frame);
+  try {
+    const status = await module.ccall(
+      "picorb_worker_queue_v1",
+      "number",
+      ["number", "number"],
+      [pointer, frame.byteLength],
+      { async: true },
+    );
+    if (status !== 0) {
+      throw new Error(`PicoRuby Queue dispatch failed: ${readRuntimeError(module)}`);
+    }
+    const result = decodeQueueResponse(
+      module.HEAPU8.slice(
+        module._picorb_worker_response_ptr(),
+        module._picorb_worker_response_ptr() + module._picorb_worker_response_len(),
+      ),
+      batch.messages.length,
+    );
+    applyQueueActions(batch, result);
+    emitQueueLog(result.log);
+  } finally {
     module._free(pointer);
   }
 }
