@@ -12,8 +12,8 @@ import {
   utf8,
 } from "./host-bridge.js";
 
-const ABI_VERSION = 3;
-const REQUEST_MAGIC = new Uint8Array([0x50, 0x52, 0x51, 0x31]); // PRQ1
+const ABI_VERSION = 4;
+const REQUEST_MAGIC = new Uint8Array([0x50, 0x52, 0x51, 0x32]); // PRQ2
 const RESPONSE_MAGIC = new Uint8Array([0x50, 0x52, 0x52, 0x32]); // PRR2
 const DEFAULT_MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 const encoder = new TextEncoder();
@@ -29,6 +29,7 @@ export class HostStreamRegistry {
   constructor() {
     this.streams = new Map();
     this.nextId = 1;
+    this.inputError = null;
   }
 
   register(stream) {
@@ -37,25 +38,90 @@ export class HostStreamRegistry {
     }
     if (this.nextId > 0xffffffff) throw new HostProtocolError("Host stream handles exhausted");
     const id = this.nextId++;
-    this.streams.set(id, stream);
+    this.streams.set(id, { stream, reader: null, pending: null, eof: false });
     const payload = new Uint8Array(4);
     new DataView(payload.buffer).setUint32(0, id, true);
     return { kind: HostResultKind.hostStream, payload };
   }
 
   take(id) {
-    const stream = this.streams.get(id);
-    if (!stream) throw new HostProtocolError("Unknown or already transferred host stream handle");
+    const entry = this.streams.get(id);
+    if (!entry || entry.reader || entry.eof) throw new HostProtocolError("Unknown or already consumed host stream handle");
     this.streams.delete(id);
-    return stream;
+    return entry.stream;
+  }
+
+  registerInput(stream, maxBytes) {
+    if (!(stream instanceof ReadableStream) || stream.locked) {
+      throw new HostProtocolError("Cloudflare request body must be an unlocked ReadableStream");
+    }
+    if (this.nextId > 0xffffffff) throw new HostProtocolError("Host stream handles exhausted");
+    const id = this.nextId++;
+    this.streams.set(id, {
+      stream, reader: null, pending: null, eof: false, inputBytes: 0, maxBytes,
+    });
+    return id;
+  }
+
+  async readInput(id, length) {
+    const entry = this.streams.get(id);
+    if (!entry) throw new HostProtocolError("Unknown or transferred input stream handle");
+    if (!Number.isSafeInteger(length) || length < 1) throw new HostArgumentError("Cloudflare input read length must be positive");
+    if (entry.eof) return null;
+    const reader = entry.reader ||= entry.stream.getReader();
+    const chunks = [];
+    let total = 0;
+    while (total < length) {
+      let value = entry.pending;
+      entry.pending = null;
+      if (!value) {
+        let next;
+        try {
+          next = await reader.read();
+        } catch (error) {
+          this.inputError = error;
+          throw error;
+        }
+        if (next.done) {
+          reader.releaseLock();
+          entry.eof = true;
+          break;
+        }
+        value = next.value;
+        entry.inputBytes += value.byteLength;
+        if (entry.maxBytes !== undefined && entry.inputBytes > entry.maxBytes) {
+          const error = new RequestBodyTooLargeError(entry.maxBytes);
+          this.inputError = error;
+          entry.eof = true;
+          await reader.cancel("PicoRuby request body limit exceeded");
+          reader.releaseLock();
+          throw error;
+        }
+      }
+      const chunk = value.subarray(0, length - total);
+      chunks.push(chunk);
+      total += chunk.byteLength;
+      if (chunk.byteLength !== value.byteLength) entry.pending = value.subarray(chunk.byteLength);
+    }
+    if (total === 0) return null;
+    const result = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
+    return result;
   }
 
   discard() {
-    for (const stream of this.streams.values()) {
+    for (const { stream, reader } of this.streams.values()) {
       // Do not delay the response on an upstream cancellation promise.
-      stream.cancel("Host stream was not returned").catch(() => {});
+      (reader ? reader.cancel("Host stream was not returned") : stream.cancel("Host stream was not returned")).catch(() => {});
     }
     this.streams.clear();
+  }
+
+  takeInputError() {
+    const error = this.inputError;
+    this.inputError = null;
+    return error;
   }
 }
 
@@ -654,6 +720,101 @@ function getQueue(env, bindingTypes, bindingName) {
   return queue;
 }
 
+function getR2Bucket(env, bindingTypes, bindingName) {
+  if (typeof bindingName !== "string" || bindingName.length === 0) {
+    throw new HostArgumentError("Cloudflare R2 binding name must be a non-empty string");
+  }
+  requireBindingType(bindingTypes, bindingName, "r2");
+  const bucket = env[bindingName];
+  if (!bucket || typeof bucket.head !== "function" || typeof bucket.get !== "function" ||
+      typeof bucket.put !== "function" || typeof bucket.delete !== "function" ||
+      typeof bucket.list !== "function") {
+    throw new HostBindingError(`Cloudflare R2 binding ${bindingName} is not configured`);
+  }
+  return bucket;
+}
+
+function decodeR2Key(key) {
+  try {
+    return strictDecoder.decode(key);
+  } catch {
+    throw new HostArgumentError("Cloudflare R2 key must be valid UTF-8");
+  }
+}
+
+function parseR2Options(json, operation) {
+  let options;
+  try {
+    options = JSON.parse(json);
+  } catch {
+    throw new HostProtocolError(`Cloudflare R2 ${operation} options contain invalid JSON`);
+  }
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw new HostArgumentError(`Cloudflare R2 ${operation} options must be a JSON object`);
+  }
+  validateJsonValue(options, `Cloudflare R2 ${operation} options`);
+  return options;
+}
+
+function serializeR2Object(object) {
+  if (!object || typeof object !== "object" || typeof object.key !== "string") {
+    throw new HostProtocolError("Cloudflare R2 returned an invalid object");
+  }
+  const result = { key: object.key };
+  for (const key of ["version", "size", "etag", "httpEtag", "httpMetadata", "customMetadata", "range", "storageClass"]) {
+    if (object[key] !== undefined) result[key] = object[key];
+  }
+  if (object.uploaded !== undefined) result.uploaded = object.uploaded instanceof Date
+    ? object.uploaded.toISOString() : object.uploaded;
+  validateJsonValue(result, "Cloudflare R2 object");
+  return result;
+}
+
+async function executeR2(env, bindingTypes, bindingName, operation, args, streams) {
+  return await captureHostCall(async () => {
+    const bucket = getR2Bucket(env, bindingTypes, bindingName);
+    if (operation === "head") {
+      const object = await bucket.head(decodeR2Key(args[0]));
+      return object === null ? hostMissing() : hostOk(utf8(JSON.stringify(serializeR2Object(object))));
+    }
+    if (operation === "get") {
+      const object = await bucket.get(decodeR2Key(args[0]), parseR2Options(decodeHostCallText(args[1]), "get"));
+      if (object === null) return hostMissing();
+      const result = { object: serializeR2Object(object) };
+      if (object.body !== undefined) {
+        const stream = streams.register(object.body);
+        result.streamId = new DataView(stream.payload.buffer, stream.payload.byteOffset, 4).getUint32(0, true);
+      }
+      return hostOk(utf8(JSON.stringify(result)));
+    }
+    if (operation === "put" || operation === "put_input") {
+      const value = operation === "put"
+        ? args[1]
+        : streams.take(Number(decodeHostCallText(args[1])));
+      const optionsArg = operation === "put" ? args[2] : args[2];
+      const object = await bucket.put(decodeR2Key(args[0]), value, parseR2Options(decodeHostCallText(optionsArg), "put"));
+      return object === null ? hostMissing() : hostOk(utf8(JSON.stringify(serializeR2Object(object))));
+    }
+    if (operation === "delete") {
+      let keys;
+      try { keys = JSON.parse(decodeHostCallText(args[0])); } catch { throw new HostProtocolError("Cloudflare R2 delete keys contain invalid JSON"); }
+      if (!Array.isArray(keys) || keys.length === 0 || keys.some(key => typeof key !== "string")) {
+        throw new HostArgumentError("Cloudflare R2 delete keys must be a non-empty Array of strings");
+      }
+      await bucket.delete(keys);
+      return hostOk(new Uint8Array());
+    }
+    const listed = await bucket.list(parseR2Options(decodeHostCallText(args[0]), "list"));
+    if (!listed || !Array.isArray(listed.objects) || typeof listed.truncated !== "boolean") {
+      throw new HostProtocolError("Cloudflare R2 returned an invalid list result");
+    }
+    return hostOk(utf8(JSON.stringify({
+      objects: listed.objects.map(serializeR2Object), truncated: listed.truncated,
+      cursor: listed.cursor, delimitedPrefixes: listed.delimitedPrefixes || [],
+    })));
+  });
+}
+
 function isJsonValue(value) {
   if (value === null || typeof value === "number" || typeof value === "boolean") return true;
   if (Array.isArray(value)) return true;
@@ -818,6 +979,18 @@ export function createCloudflareBindings(env, bindingTypes) {
     "d1.execute": ([request], bindingName) => operationBindings.picorbWorkerD1Bridge(
       bindingName, decodeHostCallText(request),
     ),
+    "input.read": async ([id, length], bindingName) => captureHostCall(async () => {
+      if (bindingName !== "") return protocolErrorFrame("Cloudflare input does not use a binding");
+      const streamId = Number(decodeHostCallText(id));
+      const bytes = await streams.readInput(streamId, Number(decodeHostCallText(length)));
+      return bytes === null ? hostMissing() : hostOk(bytes);
+    }),
+    "r2.head": ([key], bindingName) => executeR2(env, types, bindingName, "head", [key], streams),
+    "r2.get": ([key, options], bindingName) => executeR2(env, types, bindingName, "get", [key, options], streams),
+    "r2.put": ([key, value, options], bindingName) => executeR2(env, types, bindingName, "put", [key, value, options], streams),
+    "r2.put_input": ([key, inputId, options], bindingName) => executeR2(env, types, bindingName, "put_input", [key, inputId, options], streams),
+    "r2.delete": ([keys], bindingName) => executeR2(env, types, bindingName, "delete", [keys], streams),
+    "r2.list": ([options], bindingName) => executeR2(env, types, bindingName, "list", [options], streams),
     "ai.run": ([model, input, options], bindingName) => executeAiRun(
       env, types, bindingName, decodeHostCallText(model), decodeHostCallText(input), decodeHostCallText(options), streams,
     ),
@@ -856,6 +1029,13 @@ export function createCloudflareBindings(env, bindingTypes) {
     "durable_object.get": 1,
     "durable_object.put": 2,
     "d1.execute": 1,
+    "input.read": 2,
+    "r2.head": 1,
+    "r2.get": 2,
+    "r2.put": 3,
+    "r2.put_input": 3,
+    "r2.delete": 1,
+    "r2.list": 1,
     "ai.run": 3,
     "vectorize.query": 1,
     "vectorize.query_by_id": 1,
@@ -918,7 +1098,7 @@ function normalizeBindingTypes(bindingTypes) {
       throw new TypeError("Cloudflare binding type contains an invalid name");
     }
     if (type !== "kv" && type !== "queue" && type !== "durable_object" &&
-        type !== "d1" && type !== "ai" && type !== "vectorize") {
+        type !== "d1" && type !== "r2" && type !== "ai" && type !== "vectorize") {
       throw new TypeError(`Unsupported Cloudflare binding type for ${name}: ${type}`);
     }
     normalized[name] = type;
@@ -1067,14 +1247,20 @@ async function readRequestBody(request, limit) {
   return body;
 }
 
-export async function encodeRackRequest(request, options = {}) {
+export async function encodeRackRequest(request, options = {}, streams) {
   const maxRequestBodyBytes = options.maxRequestBodyBytes ?? DEFAULT_MAX_REQUEST_BODY_BYTES;
   const url = new URL(request.url);
   const scheme = url.protocol.slice(0, -1);
   const port = url.port || (scheme === "https" ? "443" : "80");
   const protocol = request.cf?.httpProtocol || "HTTP/1.1";
   const headers = Array.from(request.headers.entries());
-  const body = await readRequestBody(request, maxRequestBodyBytes);
+  if (!streams) throw new Error("Host stream registry is unavailable");
+  const contentLength = request.headers.get("content-length");
+  if (contentLength !== null && Number(contentLength) > maxRequestBodyBytes) {
+    throw new RequestBodyTooLargeError(maxRequestBodyBytes);
+  }
+  const body = request.body || new ReadableStream({ start(controller) { controller.close(); } });
+  const inputId = streams.registerInput(body, maxRequestBodyBytes);
 
   const writer = new FrameWriter();
   writer.appendBytes(REQUEST_MAGIC);
@@ -1091,7 +1277,7 @@ export async function encodeRackRequest(request, options = {}) {
     writer.appendString(name);
     writer.appendString(value);
   }
-  writer.appendLengthPrefixedBytes(body);
+  writer.appendU32(inputId);
   return writer.finish();
 }
 
@@ -1145,7 +1331,25 @@ export async function createRuntime(createPicoRuby, wasmModule, appBytecode, run
   if (context) {
     bindings.picorbWorkerHostCallBridge = context.create().picorbWorkerHostCallBridge;
   }
-  const streams = hostContexts.get(bindings.picorbWorkerHostCallBridge)?.streams;
+  const streams = hostContexts.get(bindings.picorbWorkerHostCallBridge)?.streams ?? new HostStreamRegistry();
+  if (!context) {
+    const customHostBridge = bindings.picorbWorkerHostCallBridge;
+    bindings.picorbWorkerHostCallBridge = async frame => {
+      try {
+        const call = decodeHostCall(frame);
+        if (call.operation === "input.read" && call.bindingName === "" && call.args.length === 2) {
+          return await captureHostCall(async () => {
+            const bytes = await streams.readInput(Number(decodeHostCallText(call.args[0])), Number(decodeHostCallText(call.args[1])));
+            return bytes === null ? hostMissing() : hostOk(bytes);
+          });
+        }
+        if (customHostBridge) return await customHostBridge(frame);
+        return protocolErrorFrame("Cloudflare host operation is unavailable");
+      } catch (error) {
+        return protocolErrorFrame(error instanceof Error ? error.message : String(error));
+      }
+    };
+  }
   const module = await createPicoRuby({
     ...defaultRuntimeBindings,
     ...bindings,
@@ -1230,7 +1434,8 @@ export function dispatch(module, request, requestOptions = {}) {
 }
 
 async function dispatchOnce(module, request, requestOptions) {
-  const frame = await encodeRackRequest(request, requestOptions);
+  const streams = runtimeStreams.get(module);
+  const frame = await encodeRackRequest(request, requestOptions, streams);
   const pointer = copyToWasm(module, frame);
   try {
     const status = await module.ccall(
@@ -1240,6 +1445,8 @@ async function dispatchOnce(module, request, requestOptions) {
       [pointer, frame.byteLength],
       { async: true },
     );
+    const inputError = streams?.takeInputError();
+    if (inputError) throw inputError;
     if (status !== 0) {
       throw new Error(`PicoRuby dispatch failed: ${readRuntimeError(module)}`);
     }

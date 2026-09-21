@@ -18,13 +18,26 @@ end
 
 def request_frame
   fields = ["POST", "https", "example.com", "443", "example.com", "/lint", "name=pico", "HTTP/2"]
-  frame = "PRQ1".b
+  frame = "PRQ2".b
   fields.each { |field| frame << encode_string(field) }
   frame << encode_u32(2)
   frame << encode_string("content-type") << encode_string("application/octet-stream")
   frame << encode_string("content-length") << encode_string("4")
-  frame << encode_string("lint".b)
+  frame << encode_u32(1)
   frame
+end
+
+input = "lint".b
+Cloudflare.define_singleton_method(:__host_call) do |operation, binding_name, arguments|
+  raise "unexpected host operation: #{operation}" unless operation == "input.read"
+  raise "input.read must not have a binding name" unless binding_name == ""
+
+  length = Integer(arguments.fetch(1))
+  return nil if input.empty?
+
+  chunk = input.byteslice(0, length)
+  input = input.byteslice(chunk.bytesize, input.bytesize - chunk.bytesize)
+  chunk
 end
 
 finished = nil

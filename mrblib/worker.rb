@@ -3,7 +3,7 @@ module PicoRubyWorker
   end
 
   module RackWire
-    REQUEST_MAGIC = "PRQ1"
+    REQUEST_MAGIC = "PRQ2"
     REQUEST_FIELD_COUNT = 8
     MAX_HEADER_COUNT = 256
 
@@ -72,9 +72,9 @@ module PicoRubyWorker
         index += 1
       end
 
-      body = reader.read_string
+      input_id = reader.read_u32
       reader.finish!
-      [fields, headers, body]
+      [fields, headers, input_id]
     end
   end
 
@@ -86,7 +86,7 @@ module PicoRubyWorker
     end
 
     def read(length = nil, buffer = nil)
-      raise RackError, "rack.input is closed" if @closed
+      raise PicoRubyWorker::RackError, "rack.input is closed" if @closed
       unless length.nil? || length.is_a?(Integer)
         raise ArgumentError, "rack.input length must be an Integer or nil"
       end
@@ -245,7 +245,7 @@ module PicoRubyWorker
       ENV.__cloudflare_reset
       fields = request[0]
       headers = request[1]
-      body = request[2]
+      input_id = request[2]
       method = fields[0]
       scheme = fields[1]
       server_name = fields[2]
@@ -269,10 +269,11 @@ module PicoRubyWorker
         "SERVER_PROTOCOL" => protocol,
         "HTTP_HOST" => host,
         "rack.url_scheme" => scheme,
-        "rack.input" => RackInput.new(body),
+        "rack.input" => Cloudflare::InputStream.send(:new, input_id),
         "rack.errors" => RackErrors.new,
         "rack.response_finished" => [],
         "cloudflare.env" => Cloudflare::Environment.new,
+        "cloudflare.input" => nil,
         "cloudflare.hijack" => nil,
       }
 
@@ -282,6 +283,7 @@ module PicoRubyWorker
         add_header(env, headers[index], headers[index + 1])
         index += 2
       end
+      env["cloudflare.input"] = env["rack.input"]
       env
     end
 
@@ -594,6 +596,8 @@ module Cloudflare
           value = DurableObject.__build(binding_name)
         elsif type == "d1"
           value = D1.__build(binding_name)
+        elsif type == "r2"
+          value = R2.__build(binding_name)
         elsif type == "ai"
           value = AI.__build(binding_name)
         elsif type == "vectorize"
@@ -649,6 +653,115 @@ module Cloudflare
   class Queue < Binding
     def send(message)
       Cloudflare.__queue_send(@binding_name, message)
+    end
+  end
+
+  class R2 < Binding
+    class Object
+      attr_reader :raw, :body
+
+      def initialize(raw, body = nil)
+        unless raw.is_a?(Hash) && raw["key"].is_a?(String)
+          raise ProtocolError, "Cloudflare R2 object must contain a string key"
+        end
+        unless body.nil? || body.is_a?(StreamDescriptor)
+          raise ProtocolError, "Cloudflare R2 object body must be a stream descriptor or nil"
+        end
+        @raw = raw
+        @body = body
+      end
+
+      def key; @raw["key"]; end
+      def version; @raw["version"]; end
+      def size; @raw["size"]; end
+      def etag; @raw["etag"]; end
+      def http_etag; @raw["httpEtag"]; end
+      def uploaded; @raw["uploaded"]; end
+      def http_metadata; @raw["httpMetadata"]; end
+      def custom_metadata; @raw["customMetadata"]; end
+      def range; @raw["range"]; end
+      def storage_class; @raw["storageClass"]; end
+    end
+
+    class Listing
+      attr_reader :objects, :truncated, :cursor, :delimited_prefixes
+
+      def initialize(raw)
+        unless raw.is_a?(Hash) && raw["objects"].is_a?(Array) &&
+            (raw["truncated"] == true || raw["truncated"] == false)
+          raise ProtocolError, "Cloudflare R2 list result is invalid"
+        end
+        @objects = raw["objects"].map { |object| Object.new(object) }
+        @truncated = raw["truncated"]
+        @cursor = raw["cursor"]
+        @delimited_prefixes = raw["delimitedPrefixes"] || []
+      end
+
+      def truncated?; @truncated; end
+    end
+
+    def head(key)
+      __object_request("head", [__key(key)])
+    end
+
+    def get(key, options = {})
+      raw = __request("get", [__key(key), __options(options)])
+      return nil if raw.nil?
+
+      stream_id = raw["streamId"]
+      body = stream_id.nil? ? nil : StreamDescriptor.send(:new, stream_id)
+      Object.new(raw["object"], body)
+    end
+
+    def put(key, value, options = {})
+      if value.is_a?(InputStream)
+        return __object_request("put_input", [__key(key), value.__take_for_upload.to_s, __options(options)])
+      end
+      raise ArgumentError, "Cloudflare R2 value must be a String" unless value.is_a?(String)
+
+      __object_request("put", [__key(key), value, __options(options)])
+    end
+
+    def delete(keys)
+      keys = [keys] if keys.is_a?(String)
+      unless keys.is_a?(Array) && !keys.empty? && keys.all? { |key| key.is_a?(String) }
+        raise ArgumentError, "Cloudflare R2 keys must be a non-empty String or Array of Strings"
+      end
+      Cloudflare.__host_call("r2.delete", @binding_name, [JSON.generate(keys)])
+      nil
+    rescue JSON::JSONError => error
+      raise ArgumentError, "invalid Cloudflare R2 keys: #{error.message}"
+    end
+
+    def list(options = {})
+      Listing.new(__request("list", [__options(options)]))
+    end
+
+    private
+
+    def __key(key)
+      raise ArgumentError, "Cloudflare R2 key must be a String" unless key.is_a?(String)
+      key
+    end
+
+    def __options(options)
+      raise ArgumentError, "Cloudflare R2 options must be a Hash" unless options.is_a?(Hash)
+      JSON.generate(options)
+    rescue JSON::JSONError => error
+      raise ArgumentError, "invalid Cloudflare R2 options: #{error.message}"
+    end
+
+    def __object_request(operation, arguments)
+      raw = __request(operation, arguments)
+      raw.nil? ? nil : Object.new(raw)
+    end
+
+    def __request(operation, arguments)
+      response = Cloudflare.__host_call("r2.#{operation}", @binding_name, arguments)
+      return nil if response.nil?
+      JSON.parse(response)
+    rescue JSON::JSONError => error
+      raise ProtocolError, "invalid Cloudflare R2 response JSON: #{error.message}"
     end
   end
 
@@ -928,6 +1041,130 @@ module Cloudflare
 
     class << self
       private :new
+    end
+  end
+
+  class InputStream
+    DEFAULT_READ_SIZE = 16 * 1024
+
+    def initialize(id)
+      unless id.is_a?(Integer) && id > 0 && id <= 0xffffffff
+        raise ArgumentError, "invalid input stream descriptor"
+      end
+      @id = id
+      @closed = false
+      @eof = false
+      @buffer = ""
+      @offset = 0
+      @read_started = false
+      @transferred = false
+    end
+
+    def read(length = nil, buffer = nil)
+      raise PicoRubyWorker::RackError, "rack.input is closed" if @closed
+      unless length.nil? || length.is_a?(Integer)
+        raise ArgumentError, "rack.input length must be an Integer or nil"
+      end
+      raise ArgumentError, "negative length" if length && length < 0
+      unless buffer.nil? || buffer.is_a?(String)
+        raise ArgumentError, "rack.input buffer must be a String"
+      end
+      return "" if length == 0
+
+      __ensure_readable
+      result = __consume(length)
+      target = length
+      while !@eof && (target.nil? || result.bytesize < target)
+        size = target ? target - result.bytesize : DEFAULT_READ_SIZE
+        break unless __fill(size)
+        result << __consume(target ? target - result.bytesize : nil)
+      end
+      result = nil if result.empty? && target && @eof
+      return result unless buffer && result
+      buffer.replace(result)
+      buffer
+    end
+
+    def gets(*arguments)
+      __ensure_readable
+      raise ArgumentError, "rack.input gets accepts at most one separator" if arguments.length > 1
+      separator = arguments.empty? ? "\n" : arguments[0]
+      return read if separator.nil?
+      raise ArgumentError, "rack.input separator must be a String or nil" unless separator.is_a?(String)
+      raise ArgumentError, "rack.input separator must not be empty" if separator.empty?
+
+      loop do
+        position = @buffer.index(separator, @offset)
+        return read(position + separator.bytesize - @offset) if position
+        return read if @eof
+
+        __fill(DEFAULT_READ_SIZE)
+      end
+    end
+
+    def each
+      return self unless block_given?
+
+      while (line = gets)
+        yield line
+      end
+      self
+    end
+
+    def rewind
+      __ensure_readable
+      @offset = 0
+      0
+    end
+
+    def close
+      @closed = true
+      nil
+    end
+
+    def __id
+      @id
+    end
+
+    def __take_for_upload
+      raise ArgumentError, "Cloudflare input stream has already been read" if @read_started
+      raise ArgumentError, "Cloudflare input stream has already been transferred" if @transferred
+
+      @transferred = true
+      @id
+    end
+
+    class << self
+      private :new
+    end
+
+    private
+
+    def __ensure_readable
+      raise PicoRubyWorker::RackError, "rack.input is closed" if @closed
+      raise PicoRubyWorker::RackError, "rack.input has been transferred" if @transferred
+    end
+
+    def __consume(length)
+      available = @buffer.bytesize - @offset
+      count = length && available > length ? length : available
+      return "" unless count && count > 0
+
+      result = @buffer.byteslice(@offset, count)
+      @offset += result.bytesize
+      result
+    end
+
+    def __fill(length)
+      @read_started = true
+      chunk = Cloudflare.__host_call("input.read", "", [@id.to_s, length.to_s])
+      if chunk.nil?
+        @eof = true
+        false
+      else
+        @buffer << chunk
+        true
+      end
     end
   end
 
