@@ -4,6 +4,7 @@ import fs from "node:fs";
 import createPicoRuby from "../dist/picoruby-worker.js";
 import {
   closeRuntime,
+  createCloudflareBindings,
   createRuntime,
   decodeQueueResponse,
   dispatchQueue,
@@ -45,7 +46,35 @@ assert.throws(
   /Truncated PicoRuby Worker response frame/,
 );
 
-const runtime = await createRuntime(createPicoRuby, wasmModule, appBytecode);
+function queueR2Object() {
+  const bytes = new TextEncoder().encode("queue body");
+  return {
+    key: "queue.txt",
+    size: bytes.byteLength,
+    body: new ReadableStream({
+      start(controller) {
+        controller.enqueue(bytes.subarray(0, 3));
+        controller.enqueue(bytes.subarray(3));
+        controller.close();
+      },
+    }),
+  };
+}
+
+const runtime = await createRuntime(
+  createPicoRuby,
+  wasmModule,
+  appBytecode,
+  createCloudflareBindings({
+    BUCKET: {
+      async head() { return null; },
+      async get(key) { return key === "queue.txt" ? queueR2Object() : null; },
+      async put() { throw new Error("not used"); },
+      async delete() { throw new Error("not used"); },
+      async list() { return { objects: [], truncated: false }; },
+    },
+  }, { BUCKET: "r2" }),
+);
 try {
   const individual = queueBatch(["ack", "retry", "middleware"]);
   await dispatchQueue(runtime, individual);
@@ -58,6 +87,10 @@ try {
   const all = queueBatch(["ack-all", "retry-all"]);
   await dispatchQueue(runtime, all);
   assert.deepEqual(all.calls, [["retry-all", { delaySeconds: 30 }]]);
+
+  const r2Read = queueBatch(["r2-read-all", "r2-read-partial", "r2-read-too-large"]);
+  await dispatchQueue(runtime, r2Read);
+  assert.deepEqual(r2Read.calls, [["ack", 0], ["ack", 1], ["ack", 2]]);
 
   const failed = queueBatch(["raise"]);
   await assert.rejects(dispatchQueue(runtime, failed), /Queue consumer failure/);

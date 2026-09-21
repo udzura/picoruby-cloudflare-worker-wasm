@@ -1210,6 +1210,8 @@ module Cloudflare
 
   # An opaque handle for a ReadableStream owned by the JavaScript host.
   class StreamDescriptor
+    DEFAULT_READ_SIZE = 16 * 1024
+
     attr_reader :id
 
     def initialize(id)
@@ -1217,6 +1219,37 @@ module Cloudflare
         raise ArgumentError, "invalid stream descriptor"
       end
       @id = id
+      @eof = false
+    end
+
+    def read_partial(length)
+      unless length.is_a?(Integer) && length > 0
+        raise ArgumentError, "Cloudflare stream read length must be a positive Integer"
+      end
+      return nil if @eof
+
+      chunk = Cloudflare.__host_call("stream.read", "", [@id.to_s, length.to_s])
+      if chunk.nil?
+        @eof = true
+        nil
+      else
+        chunk
+      end
+    end
+
+    def read_all(max_bytes: nil)
+      unless max_bytes.nil? || (max_bytes.is_a?(Integer) && max_bytes >= 0)
+        raise ArgumentError, "Cloudflare stream max_bytes must be a non-negative Integer or nil"
+      end
+
+      result = ""
+      while (chunk = read_partial(DEFAULT_READ_SIZE))
+        if max_bytes && result.bytesize + chunk.bytesize > max_bytes
+          raise ArgumentError, "Cloudflare stream exceeds max_bytes"
+        end
+        result << chunk
+      end
+      result
     end
 
     class << self

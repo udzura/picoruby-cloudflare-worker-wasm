@@ -12,7 +12,7 @@ import {
   utf8,
 } from "./host-bridge.js";
 
-const ABI_VERSION = 6;
+const ABI_VERSION = 7;
 const REQUEST_MAGIC = new Uint8Array([0x50, 0x52, 0x51, 0x32]); // PRQ2
 const RESPONSE_MAGIC = new Uint8Array([0x50, 0x52, 0x52, 0x32]); // PRR2
 const QUEUE_REQUEST_MAGIC = new Uint8Array([0x50, 0x43, 0x51, 0x31]); // PCQ1
@@ -67,10 +67,14 @@ export class HostStreamRegistry {
     return id;
   }
 
-  async readInput(id, length) {
+  async read(id, length, input) {
     const entry = this.streams.get(id);
-    if (!entry) throw new HostProtocolError("Unknown or transferred input stream handle");
-    if (!Number.isSafeInteger(length) || length < 1) throw new HostArgumentError("Cloudflare input read length must be positive");
+    if (!entry) {
+      throw new HostProtocolError(input ? "Unknown or transferred input stream handle" : "Unknown or consumed host stream handle");
+    }
+    if (!Number.isSafeInteger(length) || length < 1) {
+      throw new HostArgumentError(input ? "Cloudflare input read length must be positive" : "Cloudflare stream read length must be positive");
+    }
     if (entry.eof) return null;
     const reader = entry.reader ||= entry.stream.getReader();
     const chunks = [];
@@ -83,7 +87,7 @@ export class HostStreamRegistry {
         try {
           next = await reader.read();
         } catch (error) {
-          this.inputError = error;
+          if (input) this.inputError = error;
           throw error;
         }
         if (next.done) {
@@ -92,10 +96,10 @@ export class HostStreamRegistry {
           break;
         }
         value = next.value;
-        entry.inputBytes += value.byteLength;
-        if (entry.maxBytes !== undefined && entry.inputBytes > entry.maxBytes) {
+        if (input) entry.inputBytes += value.byteLength;
+        if (input && entry.maxBytes !== undefined && entry.inputBytes > entry.maxBytes) {
           const error = new RequestBodyTooLargeError(entry.maxBytes);
-          this.inputError = error;
+          if (input) this.inputError = error;
           entry.eof = true;
           await reader.cancel("PicoRuby request body limit exceeded");
           reader.releaseLock();
@@ -112,6 +116,14 @@ export class HostStreamRegistry {
     let offset = 0;
     for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.byteLength; }
     return result;
+  }
+
+  async readInput(id, length) {
+    return await this.read(id, length, true);
+  }
+
+  async readStream(id, length) {
+    return await this.read(id, length, false);
   }
 
   discard() {
@@ -989,6 +1001,12 @@ export function createCloudflareBindings(env, bindingTypes) {
       const bytes = await streams.readInput(streamId, Number(decodeHostCallText(length)));
       return bytes === null ? hostMissing() : hostOk(bytes);
     }),
+    "stream.read": async ([id, length], bindingName) => captureHostCall(async () => {
+      if (bindingName !== "") return protocolErrorFrame("Cloudflare stream does not use a binding");
+      const streamId = Number(decodeHostCallText(id));
+      const bytes = await streams.readStream(streamId, Number(decodeHostCallText(length)));
+      return bytes === null ? hostMissing() : hostOk(bytes);
+    }),
     "r2.head": ([key], bindingName) => executeR2(env, types, bindingName, "head", [key], streams),
     "r2.get": ([key, options], bindingName) => executeR2(env, types, bindingName, "get", [key, options], streams),
     "r2.put": ([key, value, options], bindingName) => executeR2(env, types, bindingName, "put", [key, value, options], streams),
@@ -1034,6 +1052,7 @@ export function createCloudflareBindings(env, bindingTypes) {
     "durable_object.put": 2,
     "d1.execute": 1,
     "input.read": 2,
+    "stream.read": 2,
     "r2.head": 1,
     "r2.get": 2,
     "r2.put": 3,
@@ -1439,9 +1458,14 @@ export async function createRuntime(createPicoRuby, wasmModule, appBytecode, run
     bindings.picorbWorkerHostCallBridge = async frame => {
       try {
         const call = decodeHostCall(frame);
-        if (call.operation === "input.read" && call.bindingName === "" && call.args.length === 2) {
+        if ((call.operation === "input.read" || call.operation === "stream.read") &&
+            call.bindingName === "" && call.args.length === 2) {
           return await captureHostCall(async () => {
-            const bytes = await streams.readInput(Number(decodeHostCallText(call.args[0])), Number(decodeHostCallText(call.args[1])));
+            const streamId = Number(decodeHostCallText(call.args[0]));
+            const length = Number(decodeHostCallText(call.args[1]));
+            const bytes = call.operation === "input.read"
+              ? await streams.readInput(streamId, length)
+              : await streams.readStream(streamId, length);
             return bytes === null ? hostMissing() : hostOk(bytes);
           });
         }
