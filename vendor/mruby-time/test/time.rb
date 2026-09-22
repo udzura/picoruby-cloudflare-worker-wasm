@@ -89,6 +89,31 @@ assert('Time fixed UTC offset formats') do
   assert_raise(TypeError) { Time.now(in: 32400) }
 end
 
+assert('Time._default_utc_offset') do
+  original = Time._default_utc_offset
+
+  begin
+    assert_nil(original)
+    assert_equal('+09:00', Time._default_utc_offset = '+09:00')
+    assert_equal('+09:00', Time._default_utc_offset)
+    assert_equal(32400, Time.now.utc_offset)
+    assert_equal('1970-01-01 09:00:00 +0900', Time.at(0).to_s)
+    assert_equal(0, Time.new(1970, 1, 1, 9).to_i)
+
+    assert_equal('1969-12-31 19:00:00 -0500', Time.at(0, in: '-05:00').to_s)
+    assert_equal(Time.at(0).getlocal.utc_offset, Time.at(0, in: nil).utc_offset)
+
+    assert_raise(ArgumentError) { Time._default_utc_offset = '+24:00' }
+    assert_equal('+09:00', Time._default_utc_offset)
+
+    Time._default_utc_offset = nil
+    assert_nil(Time._default_utc_offset)
+    assert_equal(Time.at(0, in: nil).to_s, Time.at(0).to_s)
+  ensure
+    Time._default_utc_offset = original
+  end
+end
+
 assert('Time.utc', '15.2.19.6.6') do
   t = Time.utc(2034)
   assert_operator(2034, :eql?, t.year)
