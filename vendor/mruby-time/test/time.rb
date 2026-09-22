@@ -21,6 +21,16 @@ assert('Time.at', '15.2.19.6.1') do
   assert_raise(FloatDomainError) { Time.at(0, -Float::INFINITY) }
 end
 
+assert('Time.at with fixed UTC offset') do
+  t = Time.at(0, in: '+09:00')
+
+  assert_equal('1970-01-01 09:00:00 +0900', t.to_s)
+  assert_equal(32400, t.utc_offset)
+  assert_nil(t.zone)
+  assert_false(t.utc?)
+  assert_false(t.dst?)
+end
+
 assert('Time.gm', '15.2.19.6.2') do
   t = Time.gm(2012, 9, 23)
   assert_operator(2012, :eql?, t.year)
@@ -56,6 +66,27 @@ end
 
 assert('Time.now', '15.2.19.6.5') do
   assert_equal(Time, Time.now.class)
+end
+
+assert('Time.now with fixed UTC offset') do
+  t = Time.now(in: '-00:30')
+
+  assert_equal(-1800, t.utc_offset)
+  assert_nil(t.zone)
+  assert_false(t.utc?)
+end
+
+assert('Time fixed UTC offset formats') do
+  assert_equal(32400, Time.at(0, in: '+09').utc_offset)
+  assert_equal(32400, Time.at(0, in: '+0900').utc_offset)
+  assert_equal(34215, Time.at(0, in: '+09:30:15').utc_offset)
+  assert_equal('UTC', Time.at(0, in: 'Z').zone)
+  assert_predicate(Time.at(0, in: 'UTC'), :utc?)
+
+  assert_raise(ArgumentError) { Time.now(in: '+24:00') }
+  assert_raise(ArgumentError) { Time.now(in: '+09:60') }
+  assert_raise(ArgumentError) { Time.now(in: 'Asia/Tokyo') }
+  assert_raise(TypeError) { Time.now(in: 32400) }
 end
 
 assert('Time.utc', '15.2.19.6.6') do
@@ -133,6 +164,16 @@ assert('Time#getlocal', '15.2.19.7.9') do
   assert_equal(t3, t2.getlocal)
 end
 
+assert('Time#getlocal with fixed UTC offset') do
+  original = Time.at(0).utc
+  local = original.getlocal('+09:00')
+
+  assert_equal('1970-01-01 09:00:00 +0900', local.to_s)
+  assert_equal('1970-01-01 00:00:00 UTC', original.to_s)
+  assert_equal(original, local)
+  assert_equal(original.hash, local.hash)
+end
+
 assert('Time#getutc', '15.2.19.7.10') do
   assert_equal("Sun Mar 13 07:06:40 2011", Time.at(1300000000).getutc.asctime)
 end
@@ -172,6 +213,21 @@ assert('Time#localtime', '15.2.19.7.18') do
 
   assert_equal(t3, t1.localtime)
   assert_equal(t3, t1)
+end
+
+assert('Time#localtime with fixed UTC offset') do
+  t = Time.at(0).utc
+
+  assert_equal(t, t.localtime('-05:30'))
+  assert_equal('1969-12-31 18:30:00 -0530', t.to_s)
+  assert_equal(-19800, t.utc_offset)
+end
+
+assert('Time arithmetic preserves fixed UTC offset') do
+  t = Time.at(0, in: '+09:00')
+
+  assert_equal('1970-01-01 09:01:00 +0900', (t + 60).to_s)
+  assert_equal('1970-01-01 08:59:00 +0900', (t - 60).to_s)
 end
 
 assert('Time#mday', '15.2.19.7.19') do

@@ -23,11 +23,18 @@ You can create `Time` objects in several ways:
   t = Time.now
   ```
 
+  A fixed UTC offset can be selected with the `in:` keyword:
+
+  ```ruby
+  t = Time.now(in: "+09:00")
+  ```
+
 - **`Time.at(seconds_with_fraction)`**: Creates a `Time` object for the time `seconds_with_fraction` since the Epoch (January 1, 1970, 00:00:00 UTC). You can provide seconds as an integer or a float for sub-second precision.
 
   ```ruby
-  t1 = Time.at(1678886400)       # Integer seconds
+  t1 = Time.at(1678886400)     # Integer seconds
   t2 = Time.at(1678886400.5)   # Seconds with microseconds
+  t3 = Time.at(1678886400, in: "-05:00")
   ```
 
 - **`Time.local(year, month, day, hour, min, sec, usec)`** (or **`Time.mktime`**): Creates a `Time` object from the given components in the local timezone. Arguments beyond `year` are optional and default to minimum values (e.g., month 1, day 1, hour 0, etc.).
@@ -62,8 +69,12 @@ Once you have a `Time` object, you can extract its components:
 - `t.utc?` (or `t.gmt?`): Returns `true` if the `Time` object is in UTC.
 - `t.utc` (or `t.gmtime`): Converts the `Time` object to UTC and returns `self`.
 - `t.getutc` (or `t.getgm`): Returns a new `Time` object representing the same point in time as `t`, but in UTC.
-- `t.localtime`: Converts the `Time` object to the local timezone and returns `self`.
-- `t.getlocal`: Returns a new `Time` object representing the same point in time as `t`, but in the local timezone.
+- `t.localtime(offset = nil)`: Converts the `Time` object to the local timezone, or to a fixed UTC offset, and returns `self`.
+- `t.getlocal(offset = nil)`: Returns a new `Time` object representing the same point in time as `t`, in the local timezone or at a fixed UTC offset.
+
+Fixed offsets accept `UTC`, `Z`, and signed forms such as `+09`, `+0900`,
+`+09:00`, and `+09:00:30`. Named timezone databases such as `Asia/Tokyo` are
+not supported.
 
 ### Time Arithmetic
 
