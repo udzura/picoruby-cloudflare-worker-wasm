@@ -9,6 +9,7 @@ MRuby::Gem::Specification.new("picoruby-worker-wasm") do |spec|
   spec.add_conflict "picoruby-wasm"
   spec.add_dependency "picoruby-json"
   spec.add_dependency "mruby-pack"
+  spec.add_dependency "mruby-time", gemdir: File.expand_path("vendor/mruby-time", __dir__)
 
   spec.build_settings do |gem|
     prism_include = File.join(
