@@ -7,7 +7,11 @@ MRuby::Gem::Specification.new("picoruby-worker-wasm") do |spec|
 
   spec.add_conflict "picoruby-mrubyc"
   spec.add_conflict "picoruby-wasm"
-  spec.add_dependency "picoruby-json"
+  if ENV["PICORUBY_USE_PICORUBY_JSON"]
+    spec.add_dependency "picoruby-json"
+  elsif ENV["PICORUBY_USE_MRUBY_JSONRS"]
+    spec.add_dependency "mruby-jsonrs", github: "udzura/mruby-jsonrs"
+  end
   spec.add_dependency "mruby-pack"
   spec.add_dependency "mruby-time", gemdir: File.expand_path("vendor/mruby-time", __dir__)
 
