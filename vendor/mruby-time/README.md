@@ -76,6 +76,26 @@ Fixed offsets accept `UTC`, `Z`, and signed forms such as `+09`, `+0900`,
 `+09:00`, and `+09:00:30`. Named timezone databases such as `Asia/Tokyo` are
 not supported.
 
+### Default UTC Offset
+
+This vendored version provides `_default_utc_offset` as a non-standard
+extension. Setting it changes the default timezone used by `Time.now`,
+`Time.at`, and `Time.new`:
+
+```ruby
+Time._default_utc_offset = "+09:00"
+Time.now       # fixed at UTC+09:00
+Time.at(0)     #=> 1970-01-01 09:00:00 +0900
+
+Time.now(in: "UTC")          # an explicit timezone takes precedence
+Time.now(in: nil)            # explicitly uses the system local timezone
+Time._default_utc_offset = nil # restores the original behavior
+```
+
+The setter validates and parses the offset immediately. An invalid assignment
+raises without changing the previous value. The setting is scoped to the mruby
+VM and remains in effect until it is replaced or reset to `nil`.
+
 ### Time Arithmetic
 
 - **Addition (`+`)**: Adds a duration (in seconds) to a `Time` object, returning a new `Time` object.
