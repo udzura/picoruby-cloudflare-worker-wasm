@@ -46,8 +46,11 @@ MRuby::Gem::Specification.new("picoruby-worker-wasm") do |spec|
   directory bin_dir
 
   file output_js => [File.join(build.build_dir, "lib", "libmruby.a"), bin_dir] do |task|
+    linker_attrs = build.gems.linker_attrs(spec)
+    linker_params = build.linker.link_params(*linker_attrs)
+
     sh <<~CMD
-      emcc -Oz \
+      emcc #{linker_params[:flags]} -Oz \
         -s WASM=1 \
         -s MODULARIZE=1 \
         -s EXPORT_ES6=1 \
@@ -70,7 +73,10 @@ MRuby::Gem::Specification.new("picoruby-worker-wasm") do |spec|
         --no-entry \
         --compress-debug-sections \
         #{task.prerequisites.first} \
-        -o #{task.name}
+        #{linker_params[:flags_before_libraries]} \
+        #{linker_params[:libs]} \
+        #{linker_params[:flags_after_libraries]} \
+       -o #{task.name}
     CMD
   end
 
