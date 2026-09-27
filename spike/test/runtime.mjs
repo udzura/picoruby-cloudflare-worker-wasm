@@ -60,6 +60,7 @@ const allowedWasiImports = new Set([
   "fd_fdstat_get",
   "fd_seek",
   "fd_write",
+  "clock_time_get",
 ]);
 const unexpectedWasiImports = imports.filter(
   ({ module, name }) =>
@@ -81,9 +82,10 @@ const runtime = await createRuntime(
   createPicoRuby,
   wasmModule,
   appBytecode,
+  createEnvironmentBindings({}),
 );
 
-const cryptoRuntime = await createRuntime(createPicoRuby, wasmModule, cryptoAppBytecode);
+const cryptoRuntime = await createRuntime(createPicoRuby, wasmModule, cryptoAppBytecode, createEnvironmentBindings({}));
 const randomResponse = await dispatch(cryptoRuntime, new Request("https://example.com/random"));
 assert.equal(await randomResponse.text(), "[16, false, true, 16, true]");
 const cryptoResponse = await dispatch(cryptoRuntime, new Request("https://example.com/crypto"));
@@ -167,6 +169,30 @@ assert.match(debugBody, /HTTP_X_DEBUG_HEADER="visible"/);
 assert.match(debugBody, /rack\.input\.bytesize=10/);
 assert.match(debugBody, /rack\.input="debug body"/);
 
+const injectedResponse = await dispatch(
+  runtime,
+  new Request("https://example.com/debug/rack-env"),
+  { rackEnv: { "app.request_id": "one", "app.flags": { enabled: true } } },
+);
+assert.deepEqual(JSON.parse(await injectedResponse.text()), {
+  id: "one", flags: { enabled: true },
+});
+const uninjectedResponse = await dispatch(
+  runtime,
+  new Request("https://example.com/debug/rack-env"),
+);
+assert.deepEqual(JSON.parse(await uninjectedResponse.text()), { id: null, flags: null });
+await assert.rejects(
+  dispatch(runtime, new Request("https://example.com/debug/rack-env"),
+    { rackEnv: { REQUEST_METHOD: "POST" } }),
+  /conflicts with REQUEST_METHOD/,
+);
+await assert.rejects(
+  dispatch(runtime, new Request("https://example.com/debug/rack-env"),
+    { rackEnv: { "app.invalid": undefined } }),
+  /non-JSON value/,
+);
+
 const errorResponse = await dispatch(
   runtime,
   new Request("https://example.com/debug/raise"),
@@ -227,6 +253,7 @@ const firstVmResponse = await handleRequest(
   wasmModule,
   appBytecode,
   new Request("https://example.com/factorial"),
+  createEnvironmentBindings({}),
   {
     picorbWorkerJspiAdd: async (left, right) => {
       asyncHostCallCount += 1;
@@ -243,6 +270,7 @@ const secondVmResponse = await handleRequest(
   wasmModule,
   appBytecode,
   new Request("https://example.com/debug/jspi"),
+  createEnvironmentBindings({}),
   {
     picorbWorkerJspiAdd: async (left, right) => {
       asyncHostCallCount += 1;
@@ -947,7 +975,7 @@ const r2HeadResponse = await dispatch(bindingsRuntime, new Request("https://exam
 assert.equal(await r2HeadResponse.text(), '["greeting.txt", "etag-1", "\\\"etag-1\\\""]');
 
 const r2ListResponse = await dispatch(bindingsRuntime, new Request("https://example.com/r2/list"));
-assert.equal(await r2ListResponse.text(), '[["greeting.txt"], false, nil, []]');
+assert.equal(await r2ListResponse.text(), '[["greeting.txt", "pipelined.bin"], false, nil, []]');
 
 const r2GetResponse = await dispatch(bindingsRuntime, new Request("https://example.com/r2/get"));
 assert.equal(r2GetResponse.headers.get("content-type"), "text/plain");

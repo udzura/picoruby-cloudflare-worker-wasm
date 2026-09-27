@@ -48,6 +48,10 @@ module PicoRubyWorker
       def finish!
         raise RackError, "request frame has trailing bytes" unless @offset == @frame.bytesize
       end
+
+      def finished?
+        @offset == @frame.bytesize
+      end
     end
 
     def self.decode_request(frame)
@@ -73,8 +77,10 @@ module PicoRubyWorker
       end
 
       input_id = reader.read_u32
+      additions = reader.finished? ? {} : JSON.parse(reader.read_string)
+      raise RackError, "Rack env additions must be an object" unless additions.is_a?(Hash)
       reader.finish!
-      [fields, headers, input_id]
+      [fields, headers, input_id, additions]
     end
   end
 
@@ -246,6 +252,7 @@ module PicoRubyWorker
       fields = request[0]
       headers = request[1]
       input_id = request[2]
+      additions = request[3]
       method = fields[0]
       scheme = fields[1]
       server_name = fields[2]
@@ -284,6 +291,10 @@ module PicoRubyWorker
         index += 2
       end
       env["cloudflare.input"] = env["rack.input"]
+      additions.each do |key, value|
+        raise RackError, "Rack env addition conflicts with #{key}" if env.key?(key)
+        env[key] = value
+      end
       env
     end
 

@@ -5,20 +5,29 @@ import { cloudflareBindingTypes } from "./generated/cloudflare-bindings.js";
 import {
   createCloudflareBindings,
   handleQueue,
-  handleRequest,
+  handleRequestWithOptions,
   RequestBodyTooLargeError,
 } from "./runtime.js";
 
 export { PicoRubyDurableObject } from "./durable-object.js";
 
+async function buildRackEnv(_request, _env, _ctx) {
+  return {
+    "cloudflare.fromjs": "これはジャバスクリプトから来ました。😃",
+    "cloudflare.number": 123,
+  };
+}
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
-      return await handleRequest(
+      const rackEnv = await buildRackEnv(request, env, ctx);
+      return await handleRequestWithOptions(
         createPicoRuby,
         picoRubyWasm,
         appBytecode,
         request,
+        { rackEnv },
         createCloudflareBindings(env, cloudflareBindingTypes),
       );
     } catch (error) {

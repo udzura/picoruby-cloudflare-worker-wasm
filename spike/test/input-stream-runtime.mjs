@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 import createPicoRuby from "../dist/picoruby-worker.js";
-import { closeRuntime, createRuntime, dispatch } from "../src/runtime.js";
+import { closeRuntime, createEnvironmentBindings, createRuntime, dispatch } from "../src/runtime.js";
 
 const wasmModule = new WebAssembly.Module(
   fs.readFileSync(new URL("../dist/picoruby-worker.wasm", import.meta.url)),
 );
 const appBytecode = fs.readFileSync(new URL("../dist/input_stream_app.bin", import.meta.url));
-const runtime = await createRuntime(createPicoRuby, wasmModule, appBytecode);
+const runtime = await createRuntime(createPicoRuby, wasmModule, appBytecode, createEnvironmentBindings({}));
 
 for (const [path, source, expected] of [
   ["/", new Uint8Array([0, 1, 2, 255]), new Uint8Array([0, 1, 2, 255])],

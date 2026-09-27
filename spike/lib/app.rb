@@ -7,6 +7,14 @@ class App < Sinatra::Base
     "handled by Sinatra error handler: #{env['sinatra.error'].class}"
   end
 
+  get "/" do
+    "This is a PicoRuby-powered Sinatra application, yey!"
+  end
+
+  get "/injected" do
+    "from JS: #{env["cloudflare.fromjs"]}, number: #{env["cloudflare.number"]}"
+  end
+
   get "/ruby_version" do
     "PicoRuby #{PicoRubyWorker::VERSION} | #{RUBY_ENGINE} #{RUBY_ENGINE_VERSION} (Ruby #{RUBY_VERSION})"
   end
@@ -84,6 +92,10 @@ class App < Sinatra::Base
 
   get "/debug/raise" do
     raise "Dummy Sinatra application error"
+  end
+
+  get "/debug/rack-env" do
+    JSON.generate({ "id" => env["app.request_id"], "flags" => env["app.flags"] })
   end
 
   get "/debug/jspi" do

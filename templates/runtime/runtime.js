@@ -1301,6 +1301,20 @@ export async function encodeRackRequest(request, options = {}, streams) {
     writer.appendString(value);
   }
   writer.appendU32(inputId);
+  if (options.rackEnv !== undefined) {
+    const rackEnv = options.rackEnv;
+    if (!rackEnv || typeof rackEnv !== "object" || Array.isArray(rackEnv) ||
+        Object.getPrototypeOf(rackEnv) !== Object.prototype ||
+        Object.keys(rackEnv).some(key => key.length === 0)) {
+      throw new TypeError("Rack env additions must be an object with non-empty keys");
+    }
+    validateJsonValue(rackEnv, "Rack env additions");
+    const encoded = JSON.stringify(rackEnv);
+    if (encoded === undefined || encoder.encode(encoded).byteLength > 65536) {
+      throw new TypeError("Rack env additions must be JSON values within 64 KiB");
+    }
+    writer.appendString(encoded);
+  }
   return writer.finish();
 }
 
@@ -1536,10 +1550,21 @@ export async function handleRequest(
   request,
   ...bindingSets
 ) {
+  return handleRequestWithOptions(createPicoRuby, wasmModule, appBytecode, request, {}, ...bindingSets);
+}
+
+export async function handleRequestWithOptions(
+  createPicoRuby,
+  wasmModule,
+  appBytecode,
+  request,
+  requestOptions,
+  ...bindingSets
+) {
   const bindings = mergeBindings(...bindingSets);
   const module = await createRuntime(createPicoRuby, wasmModule, appBytecode, bindings);
   try {
-    return await dispatch(module, request);
+    return await dispatch(module, request, requestOptions);
   } finally {
     await closeRuntime(module);
   }
