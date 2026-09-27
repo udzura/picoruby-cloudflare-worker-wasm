@@ -153,6 +153,26 @@ handleRequest(
 );
 ```
 
+`src/index.js` can pass request-scoped values to Ruby and inspect a snapshot of
+the Ruby Rack env after the app has returned:
+
+```js
+handleRequestWithOptions(createPicoRuby, picoRubyWasm, appBytecode, request, {
+  env,
+  ctx,
+  rackEnv: { "app.request_id": crypto.randomUUID() },
+  afterRequest: async (request, env, ctx, rackEnv, response) =>
+    rackEnv["app.blocked"] ? new Response("Blocked", { status: 403 }) : response,
+}, createCloudflareBindings(env, cloudflareBindingTypes));
+```
+
+The hook receives the original Worker `request`, `env`, and `ctx`, followed by a snapshot
+of JSON-compatible Rack env values (including values added by Ruby), then the
+response. Streams, callbacks, and Cloudflare resource wrappers are omitted
+from the Rack env snapshot. The hook may throw, return a replacement `Response`,
+or return `undefined` to keep the
+original response. See [ABI v8](../docs/abi-v8.md) for the transfer rules.
+
 For an environment-specific Wrangler section, the generator also accepts
 `--env NAME`. Resource binding sections are not inherited from the top-level
 configuration, matching Wrangler's environment model.

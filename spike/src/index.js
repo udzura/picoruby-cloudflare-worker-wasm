@@ -5,20 +5,36 @@ import { cloudflareBindingTypes } from "./generated/cloudflare-bindings.js";
 import {
   createCloudflareBindings,
   handleQueue,
-  handleRequest,
+  handleRequestWithOptions,
   RequestBodyTooLargeError,
 } from "./runtime.js";
 
 export { PicoRubyDurableObject } from "./durable-object.js";
 
+async function buildRackEnv(_request, _env, _ctx) {
+  return {
+    "cloudflare.fromjs": "これはジャバスクリプトから来ました。😃",
+    "cloudflare.number": 123,
+  };
+}
+
+async function afterRequest(_request, _env, _ctx, rackEnv, response) {
+  if (rackEnv["cloudflare.tojs"] === "abort") {
+    return new Response("aborted due to Rack instruction", { status: 503 });
+  }
+  return response;
+}
+
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     try {
-      return await handleRequest(
+      const rackEnv = await buildRackEnv(request, env, ctx);
+      return await handleRequestWithOptions(
         createPicoRuby,
         picoRubyWasm,
         appBytecode,
         request,
+        { env, ctx, rackEnv, afterRequest },
         createCloudflareBindings(env, cloudflareBindingTypes),
       );
     } catch (error) {

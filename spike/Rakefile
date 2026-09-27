@@ -77,8 +77,10 @@ def refresh_worker_wasm_checkout!
 end
 
 def compile_ruby_app!(source, output)
-  mrbc = File.join(PICORUBY_ROOT, "build", "host", "bin", "mrbc")
-  abort "mrbc was not found: #{mrbc}" unless File.executable?(mrbc)
+  mrbc = ["host", "mrbc/default"].map do |build|
+    File.join(PICORUBY_ROOT, "build", build, "bin", "mrbc")
+  end.find { |path| File.executable?(path) }
+  abort "mrbc was not found under #{PICORUBY_ROOT}/build" unless mrbc
   abort "PicoRuby app source was not found: #{source}" unless File.file?(source)
 
   FileUtils.mkdir_p(DIST_DIR)

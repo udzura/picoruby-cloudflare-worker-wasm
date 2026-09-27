@@ -19,7 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define PICORB_WORKER_ABI_VERSION 7u
+#define PICORB_WORKER_ABI_VERSION 8u
 #define PICORB_WORKER_REQUEST_MAGIC "PRQ2"
 #define PICORB_WORKER_RESPONSE_MAGIC "PRR2"
 #define PICORB_WORKER_QUEUE_REQUEST_MAGIC "PCQ1"
@@ -1262,16 +1262,21 @@ write_encoded_string(uint8_t **cursor, mrb_value string)
 static int
 encode_response(mrb_state *mrb, mrb_value result)
 {
-  if (!mrb_array_p(result) || RARRAY_LEN(result) != 3) {
-    set_error_literal("Rack adapter must return a three-element Array");
+  if (!mrb_array_p(result) || (RARRAY_LEN(result) != 3 && RARRAY_LEN(result) != 4)) {
+    set_error_literal("Rack adapter must return a three- or four-element Array");
     return PICORB_WORKER_INVALID_RESPONSE;
   }
 
   mrb_value status_value = mrb_ary_ref(mrb, result, 0);
   mrb_value headers = mrb_ary_ref(mrb, result, 1);
   mrb_value body = mrb_ary_ref(mrb, result, 2);
+  mrb_value env_snapshot = RARRAY_LEN(result) == 4 ? mrb_ary_ref(mrb, result, 3) : mrb_nil_value();
   if (!mrb_integer_p(status_value) || !mrb_array_p(headers) || (!mrb_string_p(body) && !mrb_integer_p(body))) {
     set_error_literal("Rack adapter returned invalid response types");
+    return PICORB_WORKER_INVALID_RESPONSE;
+  }
+  if (RARRAY_LEN(result) == 4 && !mrb_string_p(env_snapshot)) {
+    set_error_literal("Rack adapter returned an invalid environment snapshot");
     return PICORB_WORKER_INVALID_RESPONSE;
   }
 
@@ -1298,7 +1303,9 @@ encode_response(mrb_state *mrb, mrb_value result)
     }
     index += 2;
   }
-  if ((!host_stream && !add_encoded_string_size(&total, body)) || total > PICORB_WORKER_MAX_RESPONSE_FRAME_SIZE) {
+  if ((!host_stream && !add_encoded_string_size(&total, body)) ||
+      (!mrb_nil_p(env_snapshot) && !add_encoded_string_size(&total, env_snapshot)) ||
+      total > PICORB_WORKER_MAX_RESPONSE_FRAME_SIZE) {
     set_error_literal("Rack response frame is too large");
     return PICORB_WORKER_INVALID_RESPONSE;
   }
@@ -1323,6 +1330,7 @@ encode_response(mrb_state *mrb, mrb_value result)
   write_u32(&cursor, host_stream ? 1u : 0u);
   if (host_stream) write_u32(&cursor, (uint32_t)mrb_integer(body));
   else write_encoded_string(&cursor, body);
+  if (!mrb_nil_p(env_snapshot)) write_encoded_string(&cursor, env_snapshot);
   response_buffer.ptr[total] = '\0';
   response_buffer.len = total;
   return PICORB_WORKER_OK;

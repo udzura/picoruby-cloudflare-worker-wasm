@@ -48,6 +48,10 @@ module PicoRubyWorker
       def finish!
         raise RackError, "request frame has trailing bytes" unless @offset == @frame.bytesize
       end
+
+      def finished?
+        @offset == @frame.bytesize
+      end
     end
 
     def self.decode_request(frame)
@@ -73,8 +77,16 @@ module PicoRubyWorker
       end
 
       input_id = reader.read_u32
+      additions = reader.finished? ? {} : JSON.parse(reader.read_string)
+      raise RackError, "Rack env additions must be an object" unless additions.is_a?(Hash)
+      after_request = false
+      unless reader.finished?
+        flag = reader.read_u32
+        raise RackError, "invalid afterRequest flag" unless flag == 1
+        after_request = true
+      end
       reader.finish!
-      [fields, headers, input_id]
+      [fields, headers, input_id, additions, after_request]
     end
   end
 
@@ -238,7 +250,43 @@ module PicoRubyWorker
 
       raise error if error
 
+      result << json_env_snapshot(env) if request[4]
       result
+    end
+
+    def self.json_env_snapshot(env)
+      snapshot = {}
+      env.each do |key, value|
+        next unless key.is_a?(String) && json_env_value?(value, [], 0)
+
+        begin
+          snapshot[key] = value
+          snapshot.delete(key) if JSON.generate(snapshot).bytesize > 65_536
+        rescue
+          snapshot.delete(key)
+        end
+      end
+      JSON.generate(snapshot)
+    end
+
+    def self.json_env_value?(value, seen, depth)
+      return false if depth > 8
+      case value
+      when NilClass, String, Integer, Float, TrueClass, FalseClass
+        true
+      when Array, Hash
+        return false if seen.any? { |item| item.equal?(value) }
+        seen << value
+        valid = if value.is_a?(Array)
+          value.all? { |item| json_env_value?(item, seen, depth + 1) }
+        else
+          value.all? { |key, item| key.is_a?(String) && json_env_value?(item, seen, depth + 1) }
+        end
+        seen.pop
+        valid
+      else
+        false
+      end
     end
 
     def self.build_env(request)
@@ -246,6 +294,7 @@ module PicoRubyWorker
       fields = request[0]
       headers = request[1]
       input_id = request[2]
+      additions = request[3]
       method = fields[0]
       scheme = fields[1]
       server_name = fields[2]
@@ -284,6 +333,10 @@ module PicoRubyWorker
         index += 2
       end
       env["cloudflare.input"] = env["rack.input"]
+      additions.each do |key, value|
+        raise RackError, "Rack env addition conflicts with #{key}" if env.key?(key)
+        env[key] = value
+      end
       env
     end
 

@@ -12,7 +12,7 @@ import {
   utf8,
 } from "./host-bridge.js";
 
-const ABI_VERSION = 7;
+const ABI_VERSION = 8;
 const REQUEST_MAGIC = new Uint8Array([0x50, 0x52, 0x51, 0x32]); // PRQ2
 const RESPONSE_MAGIC = new Uint8Array([0x50, 0x52, 0x52, 0x32]); // PRR2
 const QUEUE_REQUEST_MAGIC = new Uint8Array([0x50, 0x43, 0x51, 0x31]); // PCQ1
@@ -1301,6 +1301,27 @@ export async function encodeRackRequest(request, options = {}, streams) {
     writer.appendString(value);
   }
   writer.appendU32(inputId);
+  if (options.rackEnv !== undefined) {
+    const rackEnv = options.rackEnv;
+    if (!rackEnv || typeof rackEnv !== "object" || Array.isArray(rackEnv) ||
+        Object.getPrototypeOf(rackEnv) !== Object.prototype ||
+        Object.keys(rackEnv).some(key => key.length === 0)) {
+      throw new TypeError("Rack env additions must be an object with non-empty keys");
+    }
+    validateJsonValue(rackEnv, "Rack env additions");
+    const encoded = JSON.stringify(rackEnv);
+    if (encoded === undefined || encoder.encode(encoded).byteLength > 65536) {
+      throw new TypeError("Rack env additions must be JSON values within 64 KiB");
+    }
+    writer.appendString(encoded);
+  }
+  if (options.afterRequest !== undefined) {
+    if (typeof options.afterRequest !== "function") {
+      throw new TypeError("afterRequest must be a function");
+    }
+    if (options.rackEnv === undefined) writer.appendString("{}");
+    writer.appendU32(1);
+  }
   return writer.finish();
 }
 
@@ -1402,7 +1423,7 @@ function emitQueueLog(log) {
   if (log) console[log.level](log.message, log.metadata);
 }
 
-export function decodeRackResponse(frame, requestMethod = "GET", streams, signal) {
+export function decodeRackResponse(frame, requestMethod = "GET", streams, signal, metadata) {
   const reader = new FrameReader(frame);
   const magic = reader.readBytes(RESPONSE_MAGIC.byteLength);
   for (let index = 0; index < RESPONSE_MAGIC.byteLength; index += 1) {
@@ -1424,6 +1445,13 @@ export function decodeRackResponse(frame, requestMethod = "GET", streams, signal
   const mode = reader.readU32();
   if (mode !== 0 && mode !== 1) throw new Error("Unknown PicoRuby response body mode");
   const bodyData = mode === 0 ? reader.readBytes(reader.readU32()).slice() : reader.readU32();
+  if (reader.offset < frame.byteLength) {
+    const rackEnv = JSON.parse(reader.readString());
+    if (!rackEnv || typeof rackEnv !== "object" || Array.isArray(rackEnv)) {
+      throw new Error("Invalid PicoRuby Rack environment snapshot");
+    }
+    if (metadata) metadata.rackEnv = rackEnv;
+  }
   reader.finish();
 
   const bodyAllowed = requestMethod !== "HEAD" && status !== 204 && status !== 205 && status !== 304;
@@ -1536,10 +1564,21 @@ export async function handleRequest(
   request,
   ...bindingSets
 ) {
+  return handleRequestWithOptions(createPicoRuby, wasmModule, appBytecode, request, {}, ...bindingSets);
+}
+
+export async function handleRequestWithOptions(
+  createPicoRuby,
+  wasmModule,
+  appBytecode,
+  request,
+  requestOptions,
+  ...bindingSets
+) {
   const bindings = mergeBindings(...bindingSets);
   const module = await createRuntime(createPicoRuby, wasmModule, appBytecode, bindings);
   try {
-    return await dispatch(module, request);
+    return await dispatch(module, request, requestOptions);
   } finally {
     await closeRuntime(module);
   }
@@ -1596,10 +1635,34 @@ async function dispatchOnce(module, request, requestOptions) {
     const responsePointer = module._picorb_worker_response_ptr();
     const responseLength = module._picorb_worker_response_len();
     const responseFrame = module.HEAPU8.slice(responsePointer, responsePointer + responseLength);
-    return decodeRackResponse(responseFrame, request.method, runtimeStreams.get(module), request.signal);
+    const metadata = {};
+    const response = decodeRackResponse(responseFrame, request.method, runtimeStreams.get(module), request.signal, metadata);
+    if (requestOptions.afterRequest === undefined) return response;
+
+    try {
+      const replacement = await requestOptions.afterRequest(
+        request, requestOptions.env, requestOptions.ctx, metadata.rackEnv, response,
+      );
+      if (replacement === undefined) return response;
+      if (!(replacement instanceof Response)) throw new TypeError("afterRequest must return a Response or undefined");
+      if (replacement !== response) await discardResponseBody(response, "afterRequest replaced the response");
+      return replacement;
+    } catch (error) {
+      await discardResponseBody(response, error);
+      throw error;
+    }
   } finally {
     runtimeStreams.get(module)?.discard();
     module._free(pointer);
+  }
+}
+
+async function discardResponseBody(response, reason) {
+  if (!response.body || response.body.locked) return;
+  try {
+    await response.body.cancel(reason);
+  } catch {
+    // Keep the hook result or original error when body cancellation fails.
   }
 }
 

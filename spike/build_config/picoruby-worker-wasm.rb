@@ -50,18 +50,6 @@ MRuby::CrossBuild.new("picoruby-worker-wasm") do |conf|
   end
 
   conf.gem gemdir: File.join(mruby_gems, "mruby-regexp")
-  {
-    "MRUBY_MUSTERMANN_GEM_DIR" => "udzura/mruby-mustermann",
-    "MRUBY_RACK_GEM_DIR" => "udzura/mruby-rack",
-    "PICORUBY_SINATRA_COVERS_GEM_DIR" => "udzura/picoruby-sinatra-covers",
-  }.each do |environment, repository|
-    if (gem_dir = ENV[environment])
-      conf.gem gemdir: File.expand_path(gem_dir)
-    else
-      conf.gem github: repository, branch: "master"
-    end
-  end
-
   if (gem_dir = ENV["PICORUBY_WORKER_WASM_GEM_DIR"])
     conf.gem gemdir: File.expand_path(gem_dir)
   else
@@ -71,4 +59,23 @@ MRuby::CrossBuild.new("picoruby-worker-wasm") do |conf|
              branch: gem_ref,
              checksum_hash: gem_revision
   end
+
+  {
+    "MRUBY_MUSTERMANN_GEM_DIR" => "udzura/mruby-mustermann",
+    "MRUBY_RACK_GEM_DIR" => "udzura/mruby-rack",
+  }.each do |environment, repository|
+    if (gem_dir = ENV[environment])
+      conf.gem gemdir: File.expand_path(gem_dir)
+    else
+      conf.gem github: repository, branch: "master"
+    end
+  end
+
+  if (gem_dir = ENV["PICORUBY_SINATRA_COVERS_GEM_DIR"])
+    conf.gem gemdir: File.expand_path(gem_dir)
+  else
+    conf.gem github: "udzura/picoruby-sinatra-covers", branch: "master",
+             checksum_hash: "70e96fc81153402b54c27bceb385bd9306717697"
+  end
+
 end
