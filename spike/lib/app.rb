@@ -15,6 +15,11 @@ class App < Sinatra::Base
     "from JS: #{env["cloudflare.fromjs"]}, number: #{env["cloudflare.number"]}"
   end
 
+  get "/inject_after_request" do
+    env["cloudflare.tojs"] = "abort"
+    ""
+  end
+
   get "/ruby_version" do
     "PicoRuby #{PicoRubyWorker::VERSION} | #{RUBY_ENGINE} #{RUBY_ENGINE_VERSION} (Ruby #{RUBY_VERSION})"
   end
@@ -96,6 +101,13 @@ class App < Sinatra::Base
 
   get "/debug/rack-env" do
     JSON.generate({ "id" => env["app.request_id"], "flags" => env["app.flags"] })
+  end
+
+  get "/debug/after-request" do
+    env["app.ruby_value"] = { "message" => "from Ruby", "count" => 2 }
+    env["app.unsupported"] = Object.new
+    env["rack.response_finished"] << lambda { |rack_env, _, _, _| rack_env["app.finished"] = true }
+    "original response"
   end
 
   get "/debug/jspi" do

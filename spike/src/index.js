@@ -18,6 +18,13 @@ async function buildRackEnv(_request, _env, _ctx) {
   };
 }
 
+async function afterRequest(_request, _env, _ctx, rackEnv, response) {
+  if (rackEnv["cloudflare.tojs"] === "abort") {
+    return new Response("aborted due to Rack instruction", { status: 503 });
+  }
+  return response;
+}
+
 export default {
   async fetch(request, env, ctx) {
     try {
@@ -27,7 +34,7 @@ export default {
         picoRubyWasm,
         appBytecode,
         request,
-        { rackEnv },
+        { env, ctx, rackEnv, afterRequest },
         createCloudflareBindings(env, cloudflareBindingTypes),
       );
     } catch (error) {

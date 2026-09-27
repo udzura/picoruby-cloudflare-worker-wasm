@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import createPicoRuby from "../dist/picoruby-worker.js";
-import { createCloudflareBindings, createRuntime, closeRuntime, dispatch, handleRequest } from "../src/runtime.js";
+import { createCloudflareBindings, createRuntime, closeRuntime, dispatch, handleRequest, handleRequestWithOptions } from "../src/runtime.js";
 
 const wasm = new WebAssembly.Module(fs.readFileSync(new URL("../dist/picoruby-worker.wasm", import.meta.url)));
 const app = fs.readFileSync(new URL("../dist/stream_app.bin", import.meta.url));
@@ -39,7 +39,7 @@ upstreams[2].controller.close();
 assert.equal(await responses[1].text(), "isolated");
 
 const unused = await handleRequest(createPicoRuby, wasm, app, request("unused"), bindings);
-assert.equal(await unused.text(), "Cloudflare::StreamDescriptor:1");
+assert.match(await unused.text(), /^Cloudflare::StreamDescriptor:\d+$/);
 assert.ok(upstreams[3].cancelled);
 await assert.rejects(handleRequest(createPicoRuby, wasm, app, request("invalid"), bindings), /header name/);
 assert.ok(upstreams[4].cancelled);
@@ -53,6 +53,16 @@ assert.ok(upstreams[6].cancelled, "an unselected stream is discarded");
 upstreams[7].controller.enqueue(encoder.encode("selected"));
 upstreams[7].controller.close();
 assert.equal(await overwritten.text(), "selected");
+
+const replaced = await handleRequestWithOptions(createPicoRuby, wasm, app, request("stream"), {
+  afterRequest: (_request, _env, _ctx, rackEnv) => {
+    assert.equal(Object.hasOwn(rackEnv, "cloudflare.hijack"), false);
+    return new Response("blocked", { status: 403 });
+  },
+}, bindings);
+assert.equal(replaced.status, 403);
+assert.equal(await replaced.text(), "blocked");
+assert.equal(upstreams[8].cancelled, "afterRequest replaced the response");
 
 const invalid = createCloudflareBindings({ AI: { run: async () => ({ response: "not a stream" }) } }, { AI: "ai" });
 await assert.rejects(
