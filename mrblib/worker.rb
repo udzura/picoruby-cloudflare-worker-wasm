@@ -464,8 +464,12 @@ module PicoRubyWorker
     end
 
     def self.hijack_body(descriptor, body)
+      if descriptor.is_a?(Cloudflare::CustomReadableStream)
+        raise RackError, "stream must be finished before returning" unless descriptor.finished?
+        descriptor = descriptor.__prepare
+      end
       unless descriptor.is_a?(Cloudflare::StreamDescriptor)
-        raise RackError, "cloudflare.hijack must contain a Cloudflare::StreamDescriptor"
+        raise RackError, "cloudflare.hijack must contain a Cloudflare stream"
       end
       raise RackError, "Rack body must respond to each" unless body.respond_to?(:each)
 
@@ -1261,6 +1265,83 @@ module Cloudflare
     end
   end
 
+  # A Ruby producer whose block runs after Rack has returned its headers.
+  class CustomReadableStream
+    def initialize(&block)
+      raise ArgumentError, "a stream block is required" unless block
+      @block = block
+      @finished = false
+      @descriptor = nil
+      @closed = false
+    end
+
+    def finish
+      raise ArgumentError, "stream already finished" if @finished
+      @finished = true
+      self
+    end
+
+    def finished?
+      @finished
+    end
+
+    def on_error(&block)
+      @on_error = block
+      self
+    end
+
+    def __prepare
+      raise ArgumentError, "stream is not finished" unless @finished
+      raise ArgumentError, "stream already prepared" if @descriptor
+      @descriptor = Cloudflare.__host_call("output.create", "", [])
+      self.class.__pending = self
+      @descriptor
+    end
+
+    def write(value)
+      raise IOError, "stream is closed" if @closed
+      raise TypeError, "stream chunks must be Strings" unless value.is_a?(String)
+      Cloudflare.__host_call("output.write", "", [@descriptor.id.to_s, value])
+      self
+    end
+
+    def close
+      return if @closed
+      @closed = true
+      Cloudflare.__host_call("output.close", "", [@descriptor.id.to_s])
+      nil
+    end
+
+    def __run
+      begin
+        @block.call(self)
+      rescue => error
+        begin
+          write(@on_error ? @on_error.call(error).to_s : "Stream error: #{error.class}: #{error.message}\n")
+        rescue
+          # The reader may have disconnected.
+        end
+      ensure
+        begin
+          close
+        rescue
+          # Closing an already cancelled response cannot be recovered here.
+        end
+      end
+    end
+
+    def self.__pending=(stream)
+      @pending = stream
+    end
+
+    def self.__run_pending
+      stream = @pending
+      @pending = nil
+      raise "no pending Ruby output stream" unless stream
+      stream.__run
+    end
+  end
+
   # An opaque handle for a ReadableStream owned by the JavaScript host.
   class StreamDescriptor
     DEFAULT_READ_SIZE = 16 * 1024
@@ -1362,6 +1443,7 @@ module Cloudflare
       loop do
         position = @buffer.index(separator, @offset)
         return read(position + separator.bytesize - @offset) if position
+        return nil if @eof && @offset >= @buffer.bytesize
         return read if @eof
 
         __fill(DEFAULT_READ_SIZE)

@@ -20,6 +20,15 @@ function register(registry, source) {
   return new DataView(decoded.payload.buffer).getUint32(0, true);
 }
 const registry = new HostStreamRegistry();
+let partialController;
+const partialId = register(registry, new ReadableStream({
+  start(controller) { partialController = controller; },
+}, { highWaterMark: 0 }));
+partialController.enqueue(encoder.encode("line one\nline two\n"));
+assert.equal(new TextDecoder().decode(await registry.readStream(partialId, 5)), "line ");
+assert.equal(new TextDecoder().decode(await registry.readStream(partialId, 16_384)), "one\nline two\n");
+partialController.close();
+assert.equal(await registry.readStream(partialId, 16_384), null);
 let upstream;
 let pulls = 0;
 let cancelled;

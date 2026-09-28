@@ -35,6 +35,7 @@ MRuby::Gem::Specification.new("picoruby-worker-wasm") do |spec|
     _picorb_worker_init
     _picorb_worker_close
     _picorb_worker_dispatch_v1
+    _picorb_worker_stream_v1
     _picorb_worker_response_ptr
     _picorb_worker_response_len
     _picorb_worker_error_ptr
@@ -61,7 +62,7 @@ MRuby::Gem::Specification.new("picoruby-worker-wasm") do |spec|
         -s SUPPORT_LONGJMP=wasm \
         -s WASM_LEGACY_EXCEPTIONS=0 \
         -s JSPI=1 \
-        -s JSPI_EXPORTS='["picorb_worker_init","picorb_worker_dispatch_v1","picorb_worker_close"]' \
+        -s JSPI_EXPORTS='["picorb_worker_init","picorb_worker_dispatch_v1","picorb_worker_stream_v1","picorb_worker_close"]' \
         -s NO_EXIT_RUNTIME=1 \
         -s ALLOW_MEMORY_GROWTH=1 \
         -s INITIAL_MEMORY=16MB \

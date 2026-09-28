@@ -100,6 +100,21 @@ source file. Each saved change runs the equivalent of `npm run build:app`;
 Wrangler then observes the updated `dist/app.bin` and reloads the local Worker.
 To run only the Ruby bytecode watcher, use `npm run watch:app`.
 
+To exercise Ruby-level AI stream processing, build this checkout of the mgem
+and select `test/ai_proxy_stream_app.rb`. It forwards `POST /api/chat` to the
+Workers AI binding inside a `CustomReadableStream` block, logs each complete
+upstream line with `p`, and relays the SSE bytes until EOF:
+
+```console
+PICORUBY_WORKER_WASM_GEM_DIR=.. npm run build
+PICORUBY_APP=test/ai_proxy_stream_app.rb WRANGLER_CONFIG=../examples/ai-stream/wrangler.jsonc npm run dev
+curl -N -X POST --data 'Tell me a short story' http://127.0.0.1:8787/api/chat
+```
+
+The example configuration uses a remote Workers AI binding and therefore
+requires Cloudflare authentication and available AI quota. The Ruby block
+closes its output after the upstream stream reaches EOF.
+
 The example defines `App < Sinatra::Base` and registers it with
 `Rackup::Handler::CloudflareWorker.run(App)` and exposes:
 

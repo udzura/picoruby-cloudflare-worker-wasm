@@ -1434,6 +1434,33 @@ picorb_worker_dispatch_v1(const uint8_t *request_frame, size_t request_frame_len
   return status;
 }
 
+static mrb_value
+run_output_stream(mrb_state *mrb, void *data)
+{
+  (void)data;
+  struct RClass *cloudflare = mrb_module_get(mrb, "Cloudflare");
+  struct RClass *stream = mrb_class_get_under(mrb, cloudflare, "CustomReadableStream");
+  return mrb_funcall(mrb, mrb_obj_value(stream), "__run_pending", 0);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int
+picorb_worker_stream_v1(void)
+{
+  mrb_state *mrb = worker_mrb;
+  if (!mrb) return PICORB_WORKER_INVALID_STATE;
+  int arena_index = mrb_gc_arena_save(mrb);
+  mrb_bool error = FALSE;
+  mrb_value result = mrb_protect_error(mrb, run_output_stream, NULL, &error);
+  if (error || mrb_exception_p(result)) {
+    set_error_from_exception(mrb, result);
+    mrb_gc_arena_restore(mrb, arena_index);
+    return PICORB_WORKER_DISPATCH_ERROR;
+  }
+  mrb_gc_arena_restore(mrb, arena_index);
+  return PICORB_WORKER_OK;
+}
+
 EMSCRIPTEN_KEEPALIVE
 int
 picorb_worker_queue_v1(const uint8_t *queue_frame, size_t queue_frame_len)
