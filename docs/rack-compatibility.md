@@ -38,6 +38,15 @@ full/partial hijack API. It starts as `nil`. When an application assigns a
 headers, closes the Rack body without iterating it, and returns the registered
 host stream. Middleware that replaces such a response must clear the entry.
 
+It also accepts a `Cloudflare::CustomReadableStream` after `finish` has been
+called. `finish` reserves its Ruby block; it runs after the Rack response
+headers have been returned to the Worker. The block receives a writer, whose
+`write(String)` waits for downstream demand. The stream closes when the block
+returns. By default, an exception is written as `Stream error: ...` before
+closing; `on_error { |error| String }` can format it for SSE. Once streaming
+starts the HTTP status cannot be changed. The VM stays alive until the block
+finishes or the response is cancelled.
+
 ## Rack::Lint status
 
 `test/rack_lint_test.rb` wraps a representative application with the official

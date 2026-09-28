@@ -27,11 +27,13 @@ const missingEnvironmentValue = Symbol("missingEnvironmentValue");
 const dispatchQueues = new WeakMap();
 const hostContexts = new WeakMap();
 const runtimeStreams = new WeakMap();
+const runtimeOutputPumps = new WeakMap();
 
 // A separate registry is created for every VM, even if callers reuse bindings.
 export class HostStreamRegistry {
   constructor() {
     this.streams = new Map();
+    this.outputs = new Map();
     this.nextId = 1;
     this.inputError = null;
   }
@@ -50,9 +52,35 @@ export class HostStreamRegistry {
 
   take(id) {
     const entry = this.streams.get(id);
-    if (!entry || entry.reader || entry.eof) throw new HostProtocolError("Unknown or already consumed host stream handle");
+    if (!entry || entry.reader || entry.eof) throw new HostProtocolError("Unknown or already transferred or consumed host stream handle");
     this.streams.delete(id);
+    if (this.outputs.has(id)) this.outputs.get(id).transferred = true;
     return entry.stream;
+  }
+
+  createOutput() {
+    const { readable, writable } = new TransformStream();
+    const result = this.register(readable);
+    const id = new DataView(result.payload.buffer).getUint32(0, true);
+    this.outputs.set(id, { writer: writable.getWriter(), transferred: false });
+    return result;
+  }
+
+  isOutput(id) {
+    return this.outputs.has(id);
+  }
+
+  async writeOutput(id, bytes) {
+    const output = this.outputs.get(id);
+    if (!output) throw new HostProtocolError("Unknown output stream handle");
+    await output.writer.write(bytes);
+  }
+
+  async closeOutput(id) {
+    const output = this.outputs.get(id);
+    if (!output) throw new HostProtocolError("Unknown output stream handle");
+    this.outputs.delete(id);
+    try { await output.writer.close(); } finally { output.writer.releaseLock(); }
   }
 
   registerInput(stream, maxBytes) {
@@ -123,15 +151,47 @@ export class HostStreamRegistry {
   }
 
   async readStream(id, length) {
-    return await this.read(id, length, false);
+    const entry = this.streams.get(id);
+    if (!entry) throw new HostProtocolError("Unknown or consumed host stream handle");
+    if (!Number.isSafeInteger(length) || length < 1) {
+      throw new HostArgumentError("Cloudflare stream read length must be positive");
+    }
+    if (entry.eof) return null;
+    const reader = entry.reader ||= entry.stream.getReader();
+    let value = entry.pending;
+    entry.pending = null;
+    while (!value || value.byteLength === 0) {
+      const next = await reader.read();
+      if (next.done) {
+        reader.releaseLock();
+        entry.eof = true;
+        return null;
+      }
+      value = next.value;
+    }
+    const chunk = value.subarray(0, length);
+    if (chunk.byteLength < value.byteLength) entry.pending = value.subarray(chunk.byteLength);
+    return chunk;
   }
 
   discard() {
+    for (const [id, output] of this.outputs) {
+      if (output.transferred) continue;
+      output.writer.abort("Output stream was not completed").catch(() => {});
+      this.outputs.delete(id);
+    }
     for (const { stream, reader } of this.streams.values()) {
       // Do not delay the response on an upstream cancellation promise.
       (reader ? reader.cancel("Host stream was not returned") : stream.cancel("Host stream was not returned")).catch(() => {});
     }
     this.streams.clear();
+  }
+
+  discardOutputs() {
+    for (const output of this.outputs.values()) {
+      output.writer.abort("Ruby output stream ended").catch(() => {});
+    }
+    this.outputs.clear();
   }
 
   takeInputError() {
@@ -1007,6 +1067,20 @@ export function createCloudflareBindings(env, bindingTypes) {
       const bytes = await streams.readStream(streamId, Number(decodeHostCallText(length)));
       return bytes === null ? hostMissing() : hostOk(bytes);
     }),
+    "output.create": ([], bindingName) => captureHostCall(() => {
+      if (bindingName !== "") return protocolErrorFrame("Cloudflare output does not use a binding");
+      return streams.createOutput();
+    }),
+    "output.write": async ([id, bytes], bindingName) => captureHostCall(async () => {
+      if (bindingName !== "") return protocolErrorFrame("Cloudflare output does not use a binding");
+      await streams.writeOutput(Number(decodeHostCallText(id)), bytes);
+      return hostOk(new Uint8Array());
+    }),
+    "output.close": async ([id], bindingName) => captureHostCall(async () => {
+      if (bindingName !== "") return protocolErrorFrame("Cloudflare output does not use a binding");
+      await streams.closeOutput(Number(decodeHostCallText(id)));
+      return hostOk(new Uint8Array());
+    }),
     "r2.head": ([key], bindingName) => executeR2(env, types, bindingName, "head", [key], streams),
     "r2.get": ([key, options], bindingName) => executeR2(env, types, bindingName, "get", [key, options], streams),
     "r2.put": ([key, value, options], bindingName) => executeR2(env, types, bindingName, "put", [key, value, options], streams),
@@ -1053,6 +1127,9 @@ export function createCloudflareBindings(env, bindingTypes) {
     "d1.execute": 1,
     "input.read": 2,
     "stream.read": 2,
+    "output.create": 0,
+    "output.write": 2,
+    "output.close": 1,
     "r2.head": 1,
     "r2.get": 2,
     "r2.put": 3,
@@ -1465,6 +1542,7 @@ export function decodeRackResponse(frame, requestMethod = "GET", streams, signal
     source.cancel("Response does not permit a body").catch(() => {});
     return new Response(null, { status, headers });
   }
+  if (metadata && streams.isOutput(bodyData)) metadata.rubyOutput = true;
   const body = responseStream(source, signal);
   try {
     return new Response(body, { status, headers });
@@ -1495,6 +1573,21 @@ export async function createRuntime(createPicoRuby, wasmModule, appBytecode, run
               ? await streams.readInput(streamId, length)
               : await streams.readStream(streamId, length);
             return bytes === null ? hostMissing() : hostOk(bytes);
+          });
+        }
+        if (call.bindingName === "" && call.operation === "output.create" && call.args.length === 0) {
+          return captureHostCall(() => streams.createOutput());
+        }
+        if (call.bindingName === "" && call.operation === "output.write" && call.args.length === 2) {
+          return captureHostCall(async () => {
+            await streams.writeOutput(Number(decodeHostCallText(call.args[0])), call.args[1]);
+            return hostOk(new Uint8Array());
+          });
+        }
+        if (call.bindingName === "" && call.operation === "output.close" && call.args.length === 1) {
+          return captureHostCall(async () => {
+            await streams.closeOutput(Number(decodeHostCallText(call.args[0])));
+            return hostOk(new Uint8Array());
           });
         }
         if (customHostBridge) return await customHostBridge(frame);
@@ -1544,10 +1637,15 @@ export async function createRuntime(createPicoRuby, wasmModule, appBytecode, run
 }
 
 export async function closeRuntime(module) {
+  const streams = runtimeStreams.get(module);
+  streams?.discardOutputs();
   const pendingDispatch = dispatchQueues.get(module);
   if (pendingDispatch) await pendingDispatch.catch(() => {});
 
-  runtimeStreams.get(module)?.discard();
+  streams?.discardOutputs();
+  const pump = runtimeOutputPumps.get(module);
+  if (pump) await pump.catch(() => {});
+  streams?.discard();
   await module.ccall(
     "picorb_worker_close",
     null,
@@ -1578,9 +1676,19 @@ export async function handleRequestWithOptions(
   const bindings = mergeBindings(...bindingSets);
   const module = await createRuntime(createPicoRuby, wasmModule, appBytecode, bindings);
   try {
-    return await dispatch(module, request, requestOptions);
-  } finally {
+    const response = await dispatch(module, request, requestOptions);
+    const pump = runtimeOutputPumps.get(module);
+    if (pump) {
+      const completion = pump.finally(() => closeRuntime(module));
+      if (requestOptions.ctx?.waitUntil) requestOptions.ctx.waitUntil(completion);
+      else completion.catch(error => console.error("Ruby output stream failed", error));
+      return response;
+    }
     await closeRuntime(module);
+    return response;
+  } catch (error) {
+    await closeRuntime(module);
+    throw error;
   }
 }
 
@@ -1604,7 +1712,11 @@ export function dispatch(module, request, requestOptions = {}) {
   const previousDispatch = dispatchQueues.get(module) ?? Promise.resolve();
   const currentDispatch = previousDispatch
     .catch(() => {})
-    .then(() => dispatchOnce(module, request, requestOptions));
+    .then(async () => {
+      const pump = runtimeOutputPumps.get(module);
+      if (pump) await pump.catch(() => {});
+      return dispatchOnce(module, request, requestOptions);
+    });
   dispatchQueues.set(module, currentDispatch);
 
   return currentDispatch.finally(() => {
@@ -1637,15 +1749,22 @@ async function dispatchOnce(module, request, requestOptions) {
     const responseFrame = module.HEAPU8.slice(responsePointer, responsePointer + responseLength);
     const metadata = {};
     const response = decodeRackResponse(responseFrame, request.method, runtimeStreams.get(module), request.signal, metadata);
-    if (requestOptions.afterRequest === undefined) return response;
+    if (requestOptions.afterRequest === undefined) {
+      if (metadata.rubyOutput) startRubyOutput(module);
+      return response;
+    }
 
     try {
       const replacement = await requestOptions.afterRequest(
         request, requestOptions.env, requestOptions.ctx, metadata.rackEnv, response,
       );
-      if (replacement === undefined) return response;
+      if (replacement === undefined) {
+        if (metadata.rubyOutput) startRubyOutput(module);
+        return response;
+      }
       if (!(replacement instanceof Response)) throw new TypeError("afterRequest must return a Response or undefined");
       if (replacement !== response) await discardResponseBody(response, "afterRequest replaced the response");
+      else if (metadata.rubyOutput) startRubyOutput(module);
       return replacement;
     } catch (error) {
       await discardResponseBody(response, error);
@@ -1655,6 +1774,17 @@ async function dispatchOnce(module, request, requestOptions) {
     runtimeStreams.get(module)?.discard();
     module._free(pointer);
   }
+}
+
+function startRubyOutput(module) {
+  const pump = Promise.resolve().then(async () => {
+    const status = await module.ccall("picorb_worker_stream_v1", "number", [], [], { async: true });
+    if (status !== 0) throw new Error(`Ruby output stream failed: ${readRuntimeError(module)}`);
+  });
+  runtimeOutputPumps.set(module, pump);
+  pump.finally(() => {
+    if (runtimeOutputPumps.get(module) === pump) runtimeOutputPumps.delete(module);
+  }).catch(() => {});
 }
 
 async function discardResponseBody(response, reason) {

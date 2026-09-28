@@ -122,6 +122,8 @@ task build: :templates do
   compile_crypto_test_app!
   compile_ruby_app!(File.join(SPIKE_ROOT, "test", "input_stream_app.rb"), File.join(DIST_DIR, "input_stream_app.bin"))
   compile_ruby_app!(File.join(SPIKE_ROOT, "test", "stream_app.rb"), File.join(DIST_DIR, "stream_app.bin"))
+  compile_ruby_app!(File.join(SPIKE_ROOT, "test", "ruby_output_app.rb"), File.join(DIST_DIR, "ruby_output_app.bin"))
+  compile_ruby_app!(File.join(SPIKE_ROOT, "test", "ai_proxy_stream_app.rb"), File.join(DIST_DIR, "ai_proxy_stream_app.bin"))
   compile_ruby_app!(QUEUE_TEST_APP_SOURCE, File.join(DIST_DIR, "queue_app.bin"))
   stage_runtime!
 end

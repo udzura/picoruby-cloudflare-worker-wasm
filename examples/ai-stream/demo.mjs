@@ -79,7 +79,8 @@ const server = http.createServer(async (request, response) => {
     await reader?.cancel().catch(() => {});
   }
 });
-server.listen(8787, "127.0.0.1", () => console.log("Local mock AI demo: http://127.0.0.1:8787 (no AI API calls)"));
+const port = Number(process.env.AI_STREAM_DEMO_PORT || 8787);
+server.listen(port, "127.0.0.1", () => console.log(`Local mock AI demo: http://127.0.0.1:${port} (no AI API calls)`));
 async function close() {
   server.closeAllConnections();
   server.close();

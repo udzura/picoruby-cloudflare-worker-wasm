@@ -112,11 +112,16 @@ Errors before response handoff can produce an HTTP error; later upstream
 errors fail the stream and cannot change its status. Do not set a content
 length or transfer encoding.
 
-`embed` remains a buffered helper. StreamDescriptor cannot be read or
-transformed in Ruby. Unselected and replaced descriptors are canceled when
-dispatch finishes. Middleware that replaces a downstream response after it
-sets `cloudflare.hijack` must also clear that environment entry. Ruby cleanup
-callbacks run at handoff, not stream completion. See
+`embed` remains a buffered helper. A Ruby-generated response can instead read
+the descriptor with `read_partial(length)` inside `CustomReadableStream` and
+write each chunk to its output. The method returns up to `length` bytes as soon
+as a chunk is available and returns `nil` at EOF; see the
+[spike AI proxy app](../spike/test/ai_proxy_stream_app.rb). This copies data
+through Ruby and keeps the VM alive until completion. Unselected and replaced
+descriptors are canceled when dispatch finishes. Middleware that replaces a
+downstream response after it sets `cloudflare.hijack` must also clear that
+environment entry. Ruby cleanup callbacks for pass-through responses run at
+handoff, not stream completion. See
 [ABI v3](abi-v3.md) for lifecycle details and
 [the browser example](../examples/ai-stream/README.md) for incremental display.
 
