@@ -28,6 +28,8 @@ A Sinatra Todo application with a generated frontend and D1 persistence is
 available under [examples/d1-todo](examples/d1-todo/README.md).
 A Sinatra SSE endpoint with incremental browser display is available under
 [examples/ai-stream](examples/ai-stream/README.md).
+Workers AI sentiment classification and choice ranking APIs with a simple browser UI are available
+under [examples/ai-classification](examples/ai-classification/README.md).
 A Vectorize-backed RAG application with an incrementally rendered Workers AI
 answer is available under [examples/rag-stream](examples/rag-stream/README.md).
 
