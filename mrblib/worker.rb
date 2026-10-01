@@ -564,6 +564,12 @@ end
 module Rackup
   module Handler
     module CloudflareWorker
+      def self.build(&block)
+        raise ArgumentError, "block required" unless block
+
+        run(Rack::Builder.new(&block).to_app)
+      end
+
       def self.run(app, _options = nil)
         PicoRubyWorker::RackAdapter.register(app)
         yield self if block_given?

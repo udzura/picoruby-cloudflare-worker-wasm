@@ -1,0 +1,7 @@
+.picoruby-build/
+generated/
+node_modules/
+.wrangler/
+.dev.vars
+Gemfile.lock
+build_config.rb.lock

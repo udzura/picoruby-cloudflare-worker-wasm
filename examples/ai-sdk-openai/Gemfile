@@ -1,0 +1,2 @@
+source "https://rubygems.org"
+gem "picoruby-cloudflare-template", path: File.expand_path("../../../picoruby-cloudflare-template", __dir__)
