@@ -1,0 +1,15 @@
+{
+  "name": "picoruby-ai-sdk-openai-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node test.mjs",
+    "dev": "wrangler dev",
+    "check": "wrangler deploy --dry-run --outdir .wrangler/dry-run",
+    "test:workerd": "node test-workerd.mjs"
+  },
+  "devDependencies": {
+    "jsonc-parser": "3.2.0",
+    "wrangler": "4.125.0"
+  }
+}

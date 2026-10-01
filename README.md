@@ -168,3 +168,22 @@ After building the spike, run the generated-Wasm integration test with
 This project is MIT licensed. It includes code derived from PicoRuby; see
 [NOTICE](NOTICE) and [LICENSES/PicoRuby-MIT.txt](LICENSES/PicoRuby-MIT.txt)
 for the upstream attribution and license text.
+
+## Optional host plugins
+
+`Rackup::Handler::CloudflareWorker.build { use Middleware; run App }` assembles
+a `Rack::Builder` and registers it. `run(App)` keeps its existing behavior.
+
+`createCloudflareBindings(env, bindingTypes, { plugins })` accepts optional
+plugin definitions (`id`, `create(env, host)`). Each factory is recreated for
+each Wasm runtime and returns namespaced operations with `arity` and `call(args)`.
+`host.text(bytes)`, `host.json(value)`, `host.stream(readableStream)`,
+`host.argumentError(message)` and `host.bindingError(message)` provide the
+existing bridge encoding and stream ownership. Operation names must start with
+`id + "."`; duplicate operations are rejected. Plugins use an empty binding name.
+
+OpenAI support lives in the separate
+[picoruby-ai-sdk-openai mrbgem](https://github.com/udzura/picoruby-ai-sdk-openai),
+with no AI SDK imports in this core.
+See [the local-path example](examples/ai-sdk-openai/README.md) for generation,
+streaming, embeddings and automatic template export.

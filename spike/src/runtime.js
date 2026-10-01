@@ -1028,7 +1028,7 @@ export function createFetchBindings(fetcher = (...args) => globalThis.fetch(...a
   };
 }
 
-export function createCloudflareBindings(env, bindingTypes) {
+export function createCloudflareBindings(env, bindingTypes, { plugins = [] } = {}) {
   const streams = new HostStreamRegistry();
   const types = normalizeBindingTypes(bindingTypes);
   const operationBindings = mergeBindings(
@@ -1146,6 +1146,33 @@ export function createCloudflareBindings(env, bindingTypes) {
     "vectorize.describe": 1,
     "fetch": 2,
   };
+  for (const plugin of plugins) {
+    if (!plugin || !/^[a-z][a-z0-9.-]*$/.test(plugin.id) || typeof plugin.create !== "function") {
+      throw new TypeError("Invalid Worker plugin");
+    }
+    const handlers = plugin.create(env, {
+      text: decodeHostCallText,
+      json(value) {
+        validateJsonValue(value, "Worker plugin result");
+        return hostOk(utf8(JSON.stringify(value)));
+      },
+      stream: source => streams.register(source),
+      argumentError: message => new HostArgumentError(message),
+      bindingError: message => new HostBindingError(message),
+    });
+    for (const [name, handler] of Object.entries(handlers)) {
+      if (!name.startsWith(`${plugin.id}.`) || Object.hasOwn(operations, name) ||
+          !Number.isInteger(handler?.arity) || handler.arity < 0 || handler.arity > 16 ||
+          typeof handler.call !== "function") {
+        throw new TypeError(`Invalid or duplicate Worker plugin operation: ${name}`);
+      }
+      operations[name] = (args, bindingName) => captureHostCall(() => {
+        if (bindingName !== "") throw new HostArgumentError("Worker plugin operations do not use a Cloudflare binding");
+        return handler.call(args);
+      });
+      arities[name] = handler.arity;
+    }
+  }
   const bindings = mergeBindings(
     {
       picorbWorkerHostCallBridge: async (frame) => {
@@ -1171,7 +1198,7 @@ export function createCloudflareBindings(env, bindingTypes) {
   );
   hostContexts.set(bindings.picorbWorkerHostCallBridge, {
     streams,
-    create: () => createCloudflareBindings(env, types),
+    create: () => createCloudflareBindings(env, types, { plugins }),
   });
   return bindings;
 }
