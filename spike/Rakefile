@@ -84,7 +84,9 @@ def compile_ruby_app!(source, output)
   abort "PicoRuby app source was not found: #{source}" unless File.file?(source)
 
   FileUtils.mkdir_p(DIST_DIR)
-  sh mrbc, "-o", output, source
+  schema = File.join(File.dirname(source), "generated", "actived1_schema.rb")
+  sources = File.file?(schema) ? [schema, source] : [source]
+  sh mrbc, "-o", output, *sources
 end
 
 def compile_app!
@@ -141,4 +143,9 @@ end
 desc "Remove generated Worker artifacts"
 task :clean do
   FileUtils.rm_rf(DIST_DIR)
+end
+
+desc "Compile the ActiveD1 example for its workerd integration test"
+task :actived1_app do
+  compile_ruby_app!(File.join(SPIKE_ROOT, "lib/actived1/app.rb"), File.join(DIST_DIR, "actived1_app.bin"))
 end

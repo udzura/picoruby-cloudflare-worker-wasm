@@ -1,0 +1,26 @@
+#!/usr/bin/env ruby
+require "fileutils"
+require "optparse"
+require "tempfile"
+require_relative "../lib/actived1/generator"
+
+database = "DB"
+output = "generated/actived1_schema.rb"
+options = {}
+parser = OptionParser.new do |p|
+  p.banner = "Usage: actived1 generate [options]"
+  p.on("--database NAME", "Local D1 database name or binding (default DB)") { |v| database = v }
+  p.on("--config FILE", "Wrangler configuration") { |v| options[:config] = v }
+  p.on("--persist-to DIR", "Wrangler local state directory") { |v| options[:persist_to] = v }
+  p.on("--output FILE", "Generated Ruby file (default #{output})") { |v| output = v }
+end
+parser.parse!
+abort parser.to_s unless ARGV == ["generate"]
+source = ActiveD1::Generator.render(ActiveD1::Generator.read_local(database, **options))
+directory = File.dirname(output)
+FileUtils.mkdir_p(directory)
+Tempfile.create(["actived1-", ".rb"], directory) do |file|
+  file.write(source)
+  file.close
+  File.rename(file.path, output)
+end

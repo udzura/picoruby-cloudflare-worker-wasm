@@ -234,3 +234,9 @@ PICORUBY_WORKER_WASM_REF=<tag-or-branch> \
 PICORUBY_WORKER_WASM_REV=<commit> \
 npm run build
 ```
+
+## ActiveD1
+
+The [ActiveD1 spike](../picoruby-actived1/README.md) uses an independent mrbgem,
+a generated schema and the local D1 binding to run a Sinatra posts API. Its
+build configuration selects this checkout of the Worker bridge.
